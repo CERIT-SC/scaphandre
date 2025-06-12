@@ -232,7 +232,13 @@ async fn show_metrics(
     } else {
         let _ = write!(body, "<a href=\"https://github.com/hubblo-org/scaphandre/\">Scaphandre's</a> prometheus exporter here. Metrics available on <a href=\"/{suffix}\">/{suffix}</a>");
     }
-    Ok(Response::new(body.into()))
+
+    let mut response = Response::new(body.into());
+    response.headers_mut().insert(
+        hyper::header::CONTENT_TYPE,
+        hyper::header::HeaderValue::from_static("text/plain; version=0.0.4"),
+    );
+    Ok(response)
 }
 
 //  Copyright 2020 The scaphandre authors.
