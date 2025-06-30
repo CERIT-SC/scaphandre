@@ -18,7 +18,7 @@ pub mod utils;
 pub mod warpten;
 use crate::sensors::{
     utils::{current_system_time_since_epoch, IProcess},
-    RecordGenerator, Topology,
+    RecordGenerator, Topology, get_records_diff_power_microwatts
 };
 use chrono::Utc;
 use std::collections::HashMap;
@@ -480,7 +480,7 @@ impl MetricGenerator {
                     metric_value: MetricValueType::Text(host_energy_microjoules),
                 });
 
-            if let Some(power) = self.topology.get_records_diff_power_microwatts() {
+            if let Some(power) = get_records_diff_power_microwatts(&self.topology.record_buffer) {
                 self.data.push(Metric {
                     name: String::from("scaph_host_power_microwatts"),
                     metric_type: String::from("gauge"),
@@ -659,7 +659,7 @@ impl MetricGenerator {
                     metric_value: MetricValueType::Text(metric_value.clone()),
                 });
 
-                if let Some(power) = socket.get_records_diff_power_microwatts() {
+                if let Some(power) = get_records_diff_power_microwatts(&socket.record_buffer) {
                     let socket_power_microwatts = &power.value;
 
                     self.data.push(Metric {
@@ -722,7 +722,7 @@ impl MetricGenerator {
                         metric_value: MetricValueType::Text(metric_value.clone()),
                     });
 
-                    if let Some(power) = domain.get_records_diff_power_microwatts() {
+                    if let Some(power) = get_records_diff_power_microwatts(&domain.record_buffer) {
                         let domain_power_microwatts = &power.value;
                         self.data.push(Metric {
                             name: String::from("scaph_domain_power_microwatts"),

@@ -441,50 +441,6 @@ impl Topology {
         None
     }
 
-    /// Returns a Record instance containing the power consumed between
-    /// last and previous measurement, in microwatts.
-    pub fn get_records_diff_power_microwatts(&self) -> Option<Record> {
-        if self.record_buffer.len() > 1 {
-            let last_record = self.record_buffer.last().unwrap();
-            let previous_record = self
-                .record_buffer
-                .get(self.record_buffer.len() - 2)
-                .unwrap();
-            match previous_record.value.trim().parse::<u128>() {
-                Ok(previous_microjoules) => match last_record.value.trim().parse::<u128>() {
-                    Ok(last_microjoules) => {
-                        if previous_microjoules > last_microjoules {
-                            return None;
-                        }
-                        let microjoules = last_microjoules - previous_microjoules;
-                        let time_diff = last_record.timestamp.as_secs_f64()
-                            - previous_record.timestamp.as_secs_f64();
-                        let microwatts = microjoules as f64 / time_diff;
-                        return Some(Record::new(
-                            last_record.timestamp,
-                            (microwatts as u64).to_string(),
-                            units::Unit::MicroWatt,
-                        ));
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Could'nt get previous_microjoules - value : '{}' - error : {:?}",
-                            previous_record.value, e
-                        );
-                    }
-                },
-                Err(e) => {
-                    warn!(
-                        "Couldn't parse previous_microjoules - value : '{}' - error : {:?}",
-                        previous_record.value.trim(),
-                        e
-                    );
-                }
-            }
-        }
-        None
-    }
-
     /// Returns a CPUStat instance containing the difference between last
     /// and previous stats measurement (from stat_buffer), attribute by attribute.
     pub fn get_stats_diff(&self) -> Option<CPUStat> {
@@ -715,7 +671,7 @@ impl Topology {
     pub fn get_process_power_consumption_microwatts(&self, pid: Pid) -> Option<Record> {
         if let Some(record) = self.get_proc_tracker().get_process_last_record(pid) {
             let process_cpu_percentage = self.get_process_cpu_usage_percentage(pid).unwrap();
-            let topo_conso = self.get_records_diff_power_microwatts();
+            let topo_conso = get_records_diff_power_microwatts(&self.record_buffer);
             if let Some(conso) = &topo_conso {
                 let conso_f64 = conso.value.parse::<f64>().unwrap();
                 let result =
@@ -813,7 +769,7 @@ impl Topology {
                     ),
                 ),
             );
-            let topo_conso = self.get_records_diff_power_microwatts();
+            let topo_conso = get_records_diff_power_microwatts(&self.record_buffer);
             if let Some(conso) = &topo_conso {
                 let conso_f64 = conso.value.parse::<f64>().unwrap();
                 let result = (conso_f64 * process_cpu_percentage as f64) / 100.0_f64;
@@ -1241,51 +1197,6 @@ impl CPUSocket {
         None
     }
 
-    /// Returns a Record instance containing the power consumed between last
-    /// and previous measurement, for this CPU socket
-    pub fn get_records_diff_power_microwatts(&self) -> Option<Record> {
-        if self.record_buffer.len() > 1 {
-            let last_record = self.record_buffer.last().unwrap();
-            let previous_record = self
-                .record_buffer
-                .get(self.record_buffer.len() - 2)
-                .unwrap();
-            debug!(
-                "socket : last_record value: {} previous_record value: {}",
-                &last_record.value, &previous_record.value
-            );
-            let last_rec_val = last_record.value.trim();
-            debug!("socket : l1187 : trying to parse {} as u64", last_rec_val);
-            let prev_rec_val = previous_record.value.trim();
-            debug!("socket : l1189 : trying to parse {} as u64", prev_rec_val);
-            if let (Ok(last_microjoules), Ok(previous_microjoules)) =
-                (last_rec_val.parse::<u64>(), prev_rec_val.parse::<u64>())
-            {
-                let mut microjoules = 0;
-                if last_microjoules >= previous_microjoules {
-                    microjoules = last_microjoules - previous_microjoules;
-                } else {
-                    debug!(
-                        "socket: previous_microjoules ({}) > last_microjoules ({})",
-                        previous_microjoules, last_microjoules
-                    );
-                }
-                let time_diff =
-                    last_record.timestamp.as_secs_f64() - previous_record.timestamp.as_secs_f64();
-                let microwatts = microjoules as f64 / time_diff;
-                debug!("socket : l1067: microwatts: {}", microwatts);
-                return Some(Record::new(
-                    last_record.timestamp,
-                    (microwatts as u64).to_string(),
-                    units::Unit::MicroWatt,
-                ));
-            }
-        } else {
-            warn!("Not enough records for socket");
-        }
-        None
-    }
-
     pub fn get_rapl_mmio_energy_microjoules(&self) -> Option<Record> {
         if let Some(mmio) = self.sensor_data.get("mmio") {
             match &fs::read_to_string(mmio) {
@@ -1428,36 +1339,6 @@ impl Domain {
             buffer_max_kbytes,
             sensor_data,
         }
-    }
-
-    /// Returns a Record instance containing the power consumed between
-    /// last and previous measurement, in microwatts.
-    pub fn get_records_diff_power_microwatts(&self) -> Option<Record> {
-        if self.record_buffer.len() > 1 {
-            let last_record = self.record_buffer.last().unwrap();
-            let previous_record = self
-                .record_buffer
-                .get(self.record_buffer.len() - 2)
-                .unwrap();
-            if let (Ok(last_microjoules), Ok(previous_microjoules)) = (
-                last_record.value.trim().parse::<u64>(),
-                previous_record.value.trim().parse::<u64>(),
-            ) {
-                if previous_microjoules > last_microjoules {
-                    return None;
-                }
-                let microjoules = last_microjoules - previous_microjoules;
-                let time_diff =
-                    last_record.timestamp.as_secs_f64() - previous_record.timestamp.as_secs_f64();
-                let microwatts = microjoules as f64 / time_diff;
-                return Some(Record::new(
-                    last_record.timestamp,
-                    (microwatts as u64).to_string(),
-                    units::Unit::MicroWatt,
-                ));
-            }
-        }
-        None
     }
 
     pub fn get_rapl_mmio_energy_microjoules(&self) -> Option<Record> {
@@ -1643,6 +1524,58 @@ mod tests {
             println!("{:?}", s.read_stats());
         }
     }
+}
+
+    /// Returns a Record instance containing the power consumed between
+    /// last and previous measurement, in microwatts.
+    pub fn get_records_diff_power_microwatts(record_buffer: &Vec<Record>) -> Option<Record> {
+        if record_buffer.len() > 1 {
+            let last_record = record_buffer.last().unwrap();
+            let previous_record = record_buffer
+                .get(record_buffer.len() - 2)
+                .unwrap();
+
+            let previous_microjoules = previous_record.value.trim().parse::<u128>().map_err(|e| {
+                warn!(
+                    "Couldn't parse previous_microjoules - value: '{}' - error: {:?}",
+                    previous_record.value.trim(),
+                    e
+                );
+            }).ok()?;
+
+            let last_microjoules = last_record.value.trim().parse::<u128>().map_err(|e| {
+                warn!(
+                    "Couldn't parse last_microjoules - value: '{}' - error: {:?}",
+                    previous_record.value.trim(),
+                    e
+                );
+            }).ok()?;
+
+            let adjusted_last_microjoules = if previous_microjoules < last_microjoules {
+                last_microjoules
+            } else {
+                warn!(
+                    "Energy counter overflow detected: last = {}, previous = {}",
+                    last_microjoules, previous_microjoules
+                );
+                // Hard-coded /sys/class/powercap/intel-rapl/intel-rapl\:0/max_energy_range_uj
+                // AMD EPYC 7543
+                // 65532610987
+                last_microjoules + 65532610987
+            };
+
+            let microjoules = adjusted_last_microjoules - previous_microjoules;
+            let time_diff = last_record.timestamp.as_secs_f64()
+                - previous_record.timestamp.as_secs_f64();
+            let microwatts = microjoules as f64 / time_diff;
+
+            return Some(Record::new(
+                last_record.timestamp,
+                (microwatts as u64).to_string(),
+                units::Unit::MicroWatt,
+            ));
+        }
+        None
 }
 
 //  Copyright 2020 The scaphandre authors.

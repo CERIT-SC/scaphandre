@@ -1,6 +1,6 @@
 use crate::exporters::Exporter;
 use crate::sensors::Topology;
-use crate::sensors::{utils::ProcessRecord, Sensor};
+use crate::sensors::{utils::ProcessRecord, Sensor, get_records_diff_power_microwatts};
 use std::{fs, io, thread, time};
 
 /// An Exporter that extracts power consumption data of running
@@ -56,7 +56,7 @@ impl QemuExporter {
         trace!("path: {}", path);
 
         self.topology.refresh();
-        if let Some(topo_energy) = self.topology.get_records_diff_power_microwatts() {
+        if let Some(topo_energy) = get_records_diff_power_microwatts(&self.topology.record_buffer) {
             let processes = self.topology.proc_tracker.get_alive_processes();
             let qemu_processes = QemuExporter::filter_qemu_vm_processes(&processes);
             for qp in qemu_processes {
