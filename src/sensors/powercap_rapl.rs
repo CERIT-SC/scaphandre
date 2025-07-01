@@ -1,13 +1,9 @@
-use crate::sensors::units::Unit::MicroJoule;
-use crate::sensors::utils::current_system_time_since_epoch;
-use crate::sensors::{CPUSocket, Domain, Record, RecordReader, Sensor, Topology};
+use crate::sensors::{Sensor, Topology};
 use procfs::{modules, KernelModule};
 use regex::Regex;
 use std::collections::HashMap;
 use std::error::Error;
 use std::{env, fs};
-
-use super::units::Unit;
 
 pub const DEFAULT_BUFFER_PER_SOCKET_MAX_KBYTES: u16 = 1;
 pub const DEFAULT_BUFFER_PER_DOMAIN_MAX_KBYTES: u16 = 1;
@@ -66,78 +62,6 @@ impl PowercapRAPLSensor {
             Err(String::from(
                 "None of intel_rapl, intel_rapl_common or intel_rapl_msr kernel modules found.",
             ))
-        }
-    }
-}
-
-impl RecordReader for Topology {
-    fn read_record(&self) -> Result<Record, Box<dyn Error>> {
-        // if psys is available, return psys
-        // else return pkg + dram + F(disks)
-
-        if let Some(psys_record) = self.get_rapl_psys_energy_microjoules() {
-            debug!("Using PSYS metric");
-            Ok(psys_record)
-        } else {
-            let mut total: i128 = 0;
-            debug!("Suming socket PKG and DRAM metrics to get host metric");
-            for s in &self.sockets {
-                if let Ok(r) = s.read_record() {
-                    match r.value.trim().parse::<i128>() {
-                        Ok(val) => {
-                            total += val;
-                        }
-                        Err(e) => {
-                            warn!("could'nt convert {} to i128: {}", r.value.trim(), e);
-                        }
-                    }
-                }
-                for d in &s.domains {
-                    if d.name == "dram" {
-                        if let Ok(dr) = d.read_record() {
-                            match dr.value.trim().parse::<i128>() {
-                                Ok(val) => {
-                                    total += val;
-                                }
-                                Err(e) => {
-                                    warn!("could'nt convert {} to i128: {}", dr.value.trim(), e);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            Ok(Record::new(
-                current_system_time_since_epoch(),
-                total.to_string(),
-                Unit::MicroJoule,
-            ))
-        }
-    }
-}
-impl RecordReader for CPUSocket {
-    fn read_record(&self) -> Result<Record, Box<dyn Error>> {
-        let source_file = self.sensor_data.get("source_file").unwrap();
-        match fs::read_to_string(source_file) {
-            Ok(result) => Ok(Record::new(
-                current_system_time_since_epoch(),
-                result,
-                MicroJoule,
-            )),
-            Err(error) => Err(Box::new(error)),
-        }
-    }
-}
-impl RecordReader for Domain {
-    fn read_record(&self) -> Result<Record, Box<dyn Error>> {
-        let source_file = self.sensor_data.get("source_file").unwrap();
-        match fs::read_to_string(source_file) {
-            Ok(result) => Ok(Record {
-                timestamp: current_system_time_since_epoch(),
-                unit: MicroJoule,
-                value: result,
-            }),
-            Err(error) => Err(Box::new(error)),
         }
     }
 }

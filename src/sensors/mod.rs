@@ -18,6 +18,8 @@ use std::{collections::HashMap, error::Error, fmt, fs, mem::size_of_val, str, ti
 use sysinfo::{CpuExt, Pid, System, SystemExt};
 use sysinfo::{DiskExt, DiskType};
 use utils::{current_system_time_since_epoch, IProcess, ProcessTracker};
+use crate::sensors::units::Unit;
+use crate::sensors::units::Unit::MicroJoule;
 
 // !!!!!!!!!!!!!!!!! Sensor !!!!!!!!!!!!!!!!!!!!!!!
 /// Sensor trait, the Sensor API.
@@ -28,15 +30,48 @@ pub trait Sensor {
 
 /// Defines methods for Record instances creation
 /// and storage.
-pub trait RecordGenerator {
-    fn refresh_record(&mut self);
+pub trait RecordManipulator {
+    fn get_sensor_data(&self) -> &HashMap<String, String>;
+    fn get_record_buffer(&mut self) -> &mut Vec<Record>;
+
+    fn read_record(&self) -> Result<Record, Box<dyn Error>> {
+        let source_file = self.get_sensor_data().get("source_file").unwrap();
+        match fs::read_to_string(source_file) {
+            Ok(result) => Ok(Record::new(
+                current_system_time_since_epoch(),
+                result,
+                MicroJoule,
+            )),
+            Err(error) => Err(Box::new(error)),
+        }
+    }
+
+    /// Computes a new Record, stores it in the record_buffer
+    /// and returns a clone of this record.
+    fn refresh_record(&mut self) {
+        match self.read_record() {
+            Ok(record) => {
+                self.get_record_buffer().push(record);
+            }
+            Err(e) => {
+                warn!(
+                    "Could'nt read record from {}, error was : {:?}",
+                    self.get_sensor_data()
+                        .get("source_file")
+                        .unwrap_or(&String::from("SRCFILENOTKNOWN")),
+                    e
+                );
+            }
+        }
+
+        if !self.get_record_buffer().is_empty() {
+            self.clean_old_records();
+        }
+    }
     fn get_records_passive(&self) -> Vec<Record>;
     fn clean_old_records(&mut self);
 }
 
-pub trait RecordReader {
-    fn read_record(&self) -> Result<Record, Box<dyn Error>>;
-}
 
 // !!!!!!!!!!!!!!!!! Topology !!!!!!!!!!!!!!!!!!!!!!!
 /// Topology struct represents the whole CPUSocket architecture,
@@ -61,28 +96,56 @@ pub struct Topology {
     pub _sensor_data: HashMap<String, String>,
 }
 
-impl RecordGenerator for Topology {
-    /// Computes a new Record, stores it in the record_buffer
-    /// and returns a clone of this record.
-    ///
-    fn refresh_record(&mut self) {
-        match self.read_record() {
-            Ok(record) => {
-                self.record_buffer.push(record);
+impl RecordManipulator for Topology {
+    fn get_sensor_data(&self) -> &HashMap<String, String> {
+        &self._sensor_data
+    }
+
+    fn get_record_buffer(&mut self) -> &mut Vec<Record> {
+        &mut self.record_buffer
+    }
+
+    fn read_record(&self) -> Result<Record, Box<dyn Error>> {
+        // if psys is available, return psys
+        // else return pkg + dram + F(disks)
+
+        if let Some(psys_record) = self.get_rapl_psys_energy_microjoules() {
+            debug!("Using PSYS metric");
+            Ok(psys_record)
+        } else {
+            let mut total: i128 = 0;
+            debug!("Suming socket PKG and DRAM metrics to get host metric");
+            for s in &self.sockets {
+                if let Ok(r) = s.read_record() {
+                    match r.value.trim().parse::<i128>() {
+                        Ok(val) => {
+                            total += val;
             }
             Err(e) => {
-                warn!(
-                    "Could'nt read record from {}, error was : {:?}",
-                    self._sensor_data
-                        .get("source_file")
-                        .unwrap_or(&String::from("SRCFILENOTKNOWN")),
-                    e
-                );
+                            warn!("could'nt convert {} to i128: {}", r.value.trim(), e);
+                        }
+                    }
+                }
+                for d in &s.domains {
+                    if d.name == "dram" {
+                        if let Ok(dr) = d.read_record() {
+                            match dr.value.trim().parse::<i128>() {
+                                Ok(val) => {
+                                    total += val;
+                                }
+                                Err(e) => {
+                                    warn!("could'nt convert {} to i128: {}", dr.value.trim(), e);
             }
         }
-
-        if !self.record_buffer.is_empty() {
-            self.clean_old_records();
+                        }
+                    }
+                }
+            }
+            Ok(Record::new(
+                current_system_time_since_epoch(),
+                total.to_string(),
+                Unit::MicroJoule,
+            ))
         }
     }
 
@@ -938,28 +1001,13 @@ pub struct CPUSocket {
     pub sensor_data: HashMap<String, String>,
 }
 
-impl RecordGenerator for CPUSocket {
-    /// Generates a new record of the socket energy consumption and stores it in the record_buffer.
-    /// Returns a clone of this Record instance.
-    fn refresh_record(&mut self) {
-        match self.read_record() {
-            Ok(record) => {
-                self.record_buffer.push(record);
-            }
-            Err(e) => {
-                warn!(
-                    "Could'nt read record from {}, error was: {:?}",
-                    self.sensor_data
-                        .get("source_file")
-                        .unwrap_or(&String::from("SRCFILENOTKNOWN")),
-                    e
-                );
-            }
-        }
+impl RecordManipulator for CPUSocket {
+    fn get_sensor_data(&self) -> &HashMap<String, String> {
+        &self.sensor_data
+    }
 
-        if !self.record_buffer.is_empty() {
-            self.clean_old_records();
-        }
+    fn get_record_buffer(&mut self) -> &mut Vec<Record> {
+        &mut self.record_buffer
     }
 
     /// Checks the size in memory of record_buffer and deletes as many Record
@@ -1266,28 +1314,13 @@ pub struct Domain {
     #[allow(dead_code)]
     sensor_data: HashMap<String, String>,
 }
-impl RecordGenerator for Domain {
-    /// Computes a measurement of energy comsumption for this CPU domain,
-    /// stores a copy in self.record_buffer and returns it.
-    fn refresh_record(&mut self) {
-        match self.read_record() {
-            Ok(record) => {
-                self.record_buffer.push(record);
-            }
-            Err(e) => {
-                warn!(
-                    "Could'nt read record from {}. Error was : {:?}.",
-                    self.sensor_data
-                        .get("source_file")
-                        .unwrap_or(&String::from("SRCFILENOTKNOWN")),
-                    e
-                );
-            }
-        }
+impl RecordManipulator for Domain {
+    fn get_sensor_data(&self) -> &HashMap<String, String> {
+        &self.sensor_data
+    }
 
-        if !self.record_buffer.is_empty() {
-            self.clean_old_records();
-        }
+    fn get_record_buffer(&mut self) -> &mut Vec<Record> {
+        &mut self.record_buffer
     }
 
     /// Removes as many Record instances from self.record_buffer as needed

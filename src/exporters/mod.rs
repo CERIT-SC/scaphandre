@@ -18,7 +18,7 @@ pub mod utils;
 pub mod warpten;
 use crate::sensors::{
     utils::{current_system_time_since_epoch, IProcess},
-    RecordGenerator, Topology, get_records_diff_power_microwatts
+    RecordManipulator, Topology, get_records_diff_power_microwatts
 };
 use chrono::Utc;
 use std::collections::HashMap;
