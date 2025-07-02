@@ -1562,13 +1562,16 @@ mod tests {
     /// Returns a Record instance containing the power consumed between
     /// last and previous measurement, in microwatts.
     pub fn get_records_diff_power_microwatts(record_buffer: &Vec<Record>) -> Option<Record> {
-        if record_buffer.len() > 1 {
+        if record_buffer.len() < 2 {
+            return None
+        }
+
             let last_record = record_buffer.last().unwrap();
             let previous_record = record_buffer
                 .get(record_buffer.len() - 2)
                 .unwrap();
 
-            let previous_microjoules = previous_record.value.trim().parse::<u128>().map_err(|e| {
+        let mut previous_microjoules = previous_record.value.trim().parse::<u128>().map_err(|e| {
                 warn!(
                     "Couldn't parse previous_microjoules - value: '{}' - error: {:?}",
                     previous_record.value.trim(),
@@ -1576,7 +1579,7 @@ mod tests {
                 );
             }).ok()?;
 
-            let last_microjoules = last_record.value.trim().parse::<u128>().map_err(|e| {
+        let mut last_microjoules = last_record.value.trim().parse::<u128>().map_err(|e| {
                 warn!(
                     "Couldn't parse last_microjoules - value: '{}' - error: {:?}",
                     previous_record.value.trim(),
@@ -1584,20 +1587,39 @@ mod tests {
                 );
             }).ok()?;
 
-            let adjusted_last_microjoules = if previous_microjoules < last_microjoules {
-                last_microjoules
-            } else {
+        debug!(
+            "Counting diff between measurements: last = {}, previous = {}",
+            last_microjoules, previous_microjoules
+        );
+
+        // It is possible that the counter doesn't increment
+        if last_microjoules == previous_microjoules {
+            warn!(
+                "Energy counter didn't increase between measurements: last = {}, previous = {}",
+                last_microjoules, previous_microjoules
+            );
+
+        // Detect energy counter overflow
+        } else if last_microjoules < previous_microjoules {
                 warn!(
                     "Energy counter overflow detected: last = {}, previous = {}",
                     last_microjoules, previous_microjoules
                 );
+
+            // TODO Workaround because the records for topology could cumulate maximum across all sockets
+            previous_microjoules = previous_microjoules % 65532610987;
+            last_microjoules = last_microjoules % 65532610987;
+
+            // Correction of the overflow
+            last_microjoules += 65532610987;
+
                 // Hard-coded /sys/class/powercap/intel-rapl/intel-rapl\:0/max_energy_range_uj
                 // AMD EPYC 7543
                 // 65532610987
                 last_microjoules + 65532610987
             };
 
-            let microjoules = adjusted_last_microjoules - previous_microjoules;
+        let microjoules = last_microjoules - previous_microjoules;
             let time_diff = last_record.timestamp.as_secs_f64()
                 - previous_record.timestamp.as_secs_f64();
             let microwatts = microjoules as f64 / time_diff;
@@ -1607,8 +1629,6 @@ mod tests {
                 (microwatts as u64).to_string(),
                 units::Unit::MicroWatt,
             ));
-        }
-        None
 }
 
 //  Copyright 2020 The scaphandre authors.
