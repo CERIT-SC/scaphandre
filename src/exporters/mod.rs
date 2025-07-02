@@ -926,6 +926,8 @@ impl MetricGenerator {
         }
         debug!("Before loop.");
 
+        let topo_conso = get_records_diff_power_microwatts(&self.topology.record_buffer);
+
         for pid in self.topology.proc_tracker.get_alive_pids() {
             let exe = self.topology.proc_tracker.get_process_name(pid);
             let cmdline = self.topology.proc_tracker.get_process_cmdline(pid);
@@ -968,7 +970,7 @@ impl MetricGenerator {
                 }
             }
 
-            if let Some(metrics) = self.topology.get_all_per_process(pid) {
+            if let Some(metrics) = self.topology.get_all_per_process(pid, &topo_conso) {
                 for (k, v) in metrics {
                     self.data.push(Metric {
                         name: k,

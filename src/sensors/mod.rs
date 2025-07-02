@@ -31,11 +31,16 @@ pub trait Sensor {
 /// Defines methods for Record instances creation
 /// and storage.
 pub trait RecordManipulator {
-    fn get_sensor_data(&self) -> &HashMap<String, String>;
+    fn get_sensor_data_passive(&self) -> &HashMap<String, String>;
     fn get_record_buffer(&mut self) -> &mut Vec<Record>;
+    fn get_record_buffer_passive(&self) -> &Vec<Record>;
+    fn get_buffer_max_kbytes_passive(&self) -> u16;
 
+    /// Read a new record from file that stores the RAPL sensors data
+    /// and returns new Record with current unix time
     fn read_record(&self) -> Result<Record, Box<dyn Error>> {
-        let source_file = self.get_sensor_data().get("source_file").unwrap();
+        let source_file = self.get_sensor_data_passive().get("source_file").unwrap();
+        debug!("Reading file: {}", source_file);
         match fs::read_to_string(source_file) {
             Ok(result) => Ok(Record::new(
                 current_system_time_since_epoch(),
@@ -51,12 +56,13 @@ pub trait RecordManipulator {
     fn refresh_record(&mut self) {
         match self.read_record() {
             Ok(record) => {
+                debug!("Value: {}", record);
                 self.get_record_buffer().push(record);
             }
             Err(e) => {
                 warn!(
-                    "Could'nt read record from {}, error was : {:?}",
-                    self.get_sensor_data()
+                    "Couldn't read record from {}, error was : {:?}",
+                    self.get_sensor_data_passive()
                         .get("source_file")
                         .unwrap_or(&String::from("SRCFILENOTKNOWN")),
                     e
@@ -64,12 +70,60 @@ pub trait RecordManipulator {
             }
         }
 
-        if !self.get_record_buffer().is_empty() {
+        if !self.get_record_buffer_passive().is_empty() {
             self.clean_old_records();
         }
     }
-    fn get_records_passive(&self) -> Vec<Record>;
-    fn clean_old_records(&mut self);
+
+    /// Returns a new owned Vector being a clone of the current record_buffer.
+    /// This does not affect the current buffer but is costly.
+    fn get_records_passive(&self) -> Vec<Record> {
+        let mut result = vec![];
+        for r in self.get_record_buffer_passive() {
+            result.push(Record::new(
+                r.timestamp,
+                r.value.clone(),
+                units::Unit::MicroJoule,
+            ));
+        }
+        result
+    }
+
+    /// Checks the size in memory of record_buffer and deletes as many Record
+    /// instances from the buffer to make it smaller in memory than buffer_max_kbytes.
+    fn clean_old_records(&mut self) {
+        let buffer_max_kbytes = self.get_buffer_max_kbytes_passive() as u32;
+
+        let record_buffer = self.get_record_buffer();
+        if record_buffer.is_empty() {
+            return
+        }
+
+        let record_ptr = &record_buffer[0];
+        let record_size = size_of_val(record_ptr) as u32;
+        let curr_size = record_size * (record_buffer.len() as u32);
+        trace!(
+            "RecordManipulator record buffer current size: {} max_bytes: {}",
+            curr_size,
+            buffer_max_kbytes * 1000
+        );
+        if curr_size > (buffer_max_kbytes as u32 * 1000) {
+            let size_diff = curr_size - (buffer_max_kbytes * 1000);
+            trace!(
+                "RecordManipulator record size_diff: {} sizeof: {}",
+                size_diff,
+                record_size
+            );
+            if size_diff > record_size {
+                let nb_records_to_delete = size_diff / record_size;
+                for _ in 1..nb_records_to_delete {
+                    if !record_buffer.is_empty() {
+                        record_buffer.remove(0);
+                    }
+                }
+            }
+        }
+    }
 }
 
 
@@ -97,12 +151,20 @@ pub struct Topology {
 }
 
 impl RecordManipulator for Topology {
-    fn get_sensor_data(&self) -> &HashMap<String, String> {
+    fn get_sensor_data_passive(&self) -> &HashMap<String, String> {
         &self._sensor_data
     }
 
     fn get_record_buffer(&mut self) -> &mut Vec<Record> {
         &mut self.record_buffer
+    }
+
+    fn get_record_buffer_passive(&self) -> &Vec<Record> {
+        &self.record_buffer
+    }
+
+    fn get_buffer_max_kbytes_passive(&self) -> u16 {
+        self.buffer_max_kbytes
     }
 
     fn read_record(&self) -> Result<Record, Box<dyn Error>> {
@@ -113,6 +175,10 @@ impl RecordManipulator for Topology {
             debug!("Using PSYS metric");
             Ok(psys_record)
         } else {
+            // TODO This could be problematic when dealing with the counter overflow,
+            // because is increases the maximum value for `max_energy_range_uj` file
+            // to the `max_energy_range_uj` * count_of_sockets. There is a workaround
+            // with moduleo in the `get_records_diff_power_microwatts` function.
             let mut total: i128 = 0;
             debug!("Suming socket PKG and DRAM metrics to get host metric");
             for s in &self.sockets {
@@ -122,7 +188,7 @@ impl RecordManipulator for Topology {
                             total += val;
             }
             Err(e) => {
-                            warn!("could'nt convert {} to i128: {}", r.value.trim(), e);
+                            warn!("couldn't convert {} to i128: {}", r.value.trim(), e);
                         }
                     }
                 }
@@ -134,7 +200,7 @@ impl RecordManipulator for Topology {
                                     total += val;
                                 }
                                 Err(e) => {
-                                    warn!("could'nt convert {} to i128: {}", dr.value.trim(), e);
+                                    warn!("couldn't convert {} to i128: {}", dr.value.trim(), e);
             }
         }
                         }
@@ -147,49 +213,6 @@ impl RecordManipulator for Topology {
                 Unit::MicroJoule,
             ))
         }
-    }
-
-    /// Removes (and thus drops) as many Record instances from the record_buffer
-    /// as needed for record_buffer to not exceed 'buffer_max_kbytes'
-    fn clean_old_records(&mut self) {
-        let record_ptr = &self.record_buffer[0];
-        let record_size = size_of_val(record_ptr);
-        let curr_size = record_size * self.record_buffer.len();
-        trace!(
-            "topology: current size of record buffer: {} max size: {}",
-            curr_size,
-            self.buffer_max_kbytes * 1000
-        );
-        if curr_size as u16 > self.buffer_max_kbytes * 1000 {
-            let size_diff = curr_size - (self.buffer_max_kbytes * 1000) as usize;
-            trace!(
-                "topology: size_diff: {} record size: {}",
-                size_diff,
-                record_size
-            );
-            if size_diff > record_size {
-                let nb_records_to_delete = size_diff as f32 / record_size as f32;
-                for _ in 1..nb_records_to_delete as u32 {
-                    if !self.record_buffer.is_empty() {
-                        let res = self.record_buffer.remove(0);
-                        debug!("Cleaning record buffer on Topology, removing: {:?}", res);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Returns a copy of the record_buffer
-    fn get_records_passive(&self) -> Vec<Record> {
-        let mut result = vec![];
-        for r in &self.record_buffer {
-            result.push(Record::new(
-                r.timestamp,
-                r.value.clone(),
-                units::Unit::MicroJoule,
-            ));
-        }
-        result
     }
 }
 
@@ -751,7 +774,7 @@ impl Topology {
         None
     }
 
-    pub fn get_all_per_process(&self, pid: Pid) -> Option<HashMap<String, (String, Record)>> {
+    pub fn get_all_per_process(&self, pid: Pid, topo_conso: &Option<Record>) -> Option<HashMap<String, (String, Record)>> {
         let mut res = HashMap::new();
         if let Some(record) = self.get_proc_tracker().get_process_last_record(pid) {
             let process_cpu_percentage =
@@ -832,7 +855,6 @@ impl Topology {
                     ),
                 ),
             );
-            let topo_conso = get_records_diff_power_microwatts(&self.record_buffer);
             if let Some(conso) = &topo_conso {
                 let conso_f64 = conso.value.parse::<f64>().unwrap();
                 let result = (conso_f64 * process_cpu_percentage as f64) / 100.0_f64;
@@ -1002,7 +1024,7 @@ pub struct CPUSocket {
 }
 
 impl RecordManipulator for CPUSocket {
-    fn get_sensor_data(&self) -> &HashMap<String, String> {
+    fn get_sensor_data_passive(&self) -> &HashMap<String, String> {
         &self.sensor_data
     }
 
@@ -1010,50 +1032,12 @@ impl RecordManipulator for CPUSocket {
         &mut self.record_buffer
     }
 
-    /// Checks the size in memory of record_buffer and deletes as many Record
-    /// instances from the buffer to make it smaller in memory than buffer_max_kbytes.
-    fn clean_old_records(&mut self) {
-        let record_ptr = &self.record_buffer[0];
-        let curr_size = size_of_val(record_ptr) * self.record_buffer.len();
-        trace!(
-            "socket rebord buffer current size: {} max_bytes: {}",
-            curr_size,
-            self.buffer_max_kbytes * 1000
-        );
-        if curr_size > (self.buffer_max_kbytes * 1000) as usize {
-            let size_diff = curr_size - (self.buffer_max_kbytes * 1000) as usize;
-            trace!(
-                "socket record size_diff: {} sizeof: {}",
-                size_diff,
-                size_of_val(record_ptr)
-            );
-            if size_diff > size_of_val(record_ptr) {
-                let nb_records_to_delete = size_diff as f32 / size_of_val(record_ptr) as f32;
-                for _ in 1..nb_records_to_delete as u32 {
-                    if !self.record_buffer.is_empty() {
-                        let res = self.record_buffer.remove(0);
-                        debug!(
-                            "Cleaning socket id {} records buffer, removing: {}",
-                            self.id, res
-                        );
-                    }
-                }
-            }
-        }
+    fn get_record_buffer_passive(&self) -> &Vec<Record> {
+        &self.record_buffer
     }
 
-    /// Returns a new owned Vector being a clone of the current record_buffer.
-    /// This does not affect the current buffer but is costly.
-    fn get_records_passive(&self) -> Vec<Record> {
-        let mut result = vec![];
-        for r in &self.record_buffer {
-            result.push(Record::new(
-                r.timestamp,
-                r.value.clone(),
-                units::Unit::MicroJoule,
-            ));
-        }
-        result
+    fn get_buffer_max_kbytes_passive(&self) -> u16 {
+        self.buffer_max_kbytes
     }
 }
 
@@ -1315,7 +1299,7 @@ pub struct Domain {
     sensor_data: HashMap<String, String>,
 }
 impl RecordManipulator for Domain {
-    fn get_sensor_data(&self) -> &HashMap<String, String> {
+    fn get_sensor_data_passive(&self) -> &HashMap<String, String> {
         &self.sensor_data
     }
 
@@ -1323,36 +1307,12 @@ impl RecordManipulator for Domain {
         &mut self.record_buffer
     }
 
-    /// Removes as many Record instances from self.record_buffer as needed
-    /// for record_buffer to take less than 'buffer_max_kbytes' in memory
-    fn clean_old_records(&mut self) {
-        let record_ptr = &self.record_buffer[0];
-        let curr_size = size_of_val(record_ptr) * self.record_buffer.len();
-        if curr_size > (self.buffer_max_kbytes * 1000) as usize {
-            let size_diff = curr_size - (self.buffer_max_kbytes * 1000) as usize;
-            if size_diff > size_of_val(&self.record_buffer[0]) {
-                let nb_records_to_delete =
-                    size_diff as f32 / size_of_val(&self.record_buffer[0]) as f32;
-                for _ in 1..nb_records_to_delete as u32 {
-                    if !self.record_buffer.is_empty() {
-                        self.record_buffer.remove(0);
-                    }
-                }
-            }
-        }
+    fn get_record_buffer_passive(&self) -> &Vec<Record> {
+        &self.record_buffer
     }
 
-    /// Returns a copy of self.record_buffer
-    fn get_records_passive(&self) -> Vec<Record> {
-        let mut result = vec![];
-        for r in &self.record_buffer {
-            result.push(Record::new(
-                r.timestamp,
-                r.value.clone(),
-                units::Unit::MicroJoule,
-            ));
-        }
-        result
+    fn get_buffer_max_kbytes_passive(&self) -> u16 {
+        self.buffer_max_kbytes
     }
 }
 impl Domain {
@@ -1613,10 +1573,16 @@ mod tests {
             // Correction of the overflow
             last_microjoules += 65532610987;
 
+
+
+            if previous_microjoules > 65532610987 {
+                error!("Something went wrong. previous_microjoules is greater than 65532610987. Caller name {}", caller_name);
+            }
                 // Hard-coded /sys/class/powercap/intel-rapl/intel-rapl\:0/max_energy_range_uj
                 // AMD EPYC 7543
-                // 65532610987
-                last_microjoules + 65532610987
+            // 65532610987 (amd?)
+            // Intel(R) Core(TM) i5-7400
+            // 262143328850 (intel?)
             };
 
         let microjoules = last_microjoules - previous_microjoules;
