@@ -28,50 +28,193 @@ pub trait Sensor {
     fn generate_topology(&self) -> Result<Topology, Box<dyn Error>>;
 }
 
+#[derive(Debug)]
+pub struct RecordStorage {
+    pub records:  Vec<Record>,
+    pub max_value: u128,
+    pub max_kbytes_storage: u32,
+
+    // Hard-coded /sys/class/powercap/intel-rapl/intel-rapl\:0/max_energy_range_uj
+    // AMD EPYC 7543
+    // 65532610987 (amd?)
+    // Intel(R) Core(TM) i5-7400
+    // 262143328850 (intel?)
+    // TODO
+}
+
+impl Clone for RecordStorage {
+    fn clone(&self) -> RecordStorage {
+        RecordStorage {
+            records: self.records.clone(),
+            max_value: self.max_value,
+            max_kbytes_storage: self.max_kbytes_storage,
+        }
+    }
+}
+
+impl RecordStorage {
+    pub fn new(max_value: u128) -> RecordStorage{
+        RecordStorage {
+            records: vec![],
+            max_value: max_value,
+            max_kbytes_storage: 1,
+        }
+    }
+
+    /// Returns tuple of value and timestamp deltas between the current value and the provious one.
+    pub fn get_last_delta(&self) -> Option<(u128, f64)> {
+        let parse_value = |value: &str| -> Option<u128> {
+            value.trim().parse::<u128>().map_err(|e| {
+                warn!(
+                    "Couldn't parse record value: '{}' - error: {:?}",
+                    value,
+                    e
+                );
+            }).ok()
+        };
+
+        if self.records.len() < 2 {
+            return None;
+        }
+
+        let last_record = self.records.last()?;
+        let previous_record = self.records
+            .get(self.records.len() - 2)?;
+
+        // Parse records values
+        let previous_value = parse_value(&previous_record.value)?;
+        let mut last_value = parse_value(&last_record.value)?;
+
+        // Warn if records have no difference between measurements
+        if last_value == previous_value {
+            warn!(
+                "Records have no difference between measurements: value {}",
+                last_value
+            );
+        }
+        // Make overflow correction
+        else if last_value < previous_value {
+            warn!(
+                "Record overflow detected: last = {}, previous = {}, max = {}",
+                last_value, previous_value, self.max_value
+            );
+            last_value += self.max_value;
+        }
+
+        // Calculate differences and return them
+        let value_diff = last_value - previous_value;
+        let time_diff = last_record.timestamp.as_secs_f64() - previous_record.timestamp.as_secs_f64();
+        Some((value_diff, time_diff))
+    }
+
+    pub fn get_last_delta_or_absolute(&self) -> Option<(u128, f64)> {
+        let parse_value = |value: &str| -> Option<u128> {
+            value.trim().parse::<u128>().map_err(|e| {
+                warn!(
+                    "Couldn't parse record value: '{}' - error: {:?}",
+                    value,
+                    e
+                );
+            }).ok()
+        };
+
+        let delta = self.get_last_delta();
+        if delta.is_some() {
+            return delta;
+        }
+        let last_record = self.get_last_record();
+        if last_record.is_none() {
+            return None;
+        }
+        let result_value = parse_value(&last_record.unwrap().value)?;
+        let result_timestamp = last_record.unwrap().timestamp.as_secs_f64();
+        Some((result_value, result_timestamp))
+    }
+
+    pub fn get_last_record(&self) -> Option<&Record> {
+        if self.records.is_empty() {
+            return None
+        }
+        Some(&self.records.last().unwrap())
+    }
+
+    pub fn set_maximum_value(&mut self, max_value: u128) {
+        self.max_value = max_value;
+    }
+
+    pub fn add_record(&mut self, record: &Record) {
+        self.records.push(record.clone());
+        self.clean_old_records();
+    }
+
+    /// Checks the size in memory of records and deletes as many Record
+    /// instances from the buffer to make it smaller in memory than buffer_max_kbytes.
+    fn clean_old_records(&mut self) {
+        if self.records.is_empty() {
+            return
+        }
+
+        let record_ptr = &self.records[0];
+        let record_size = size_of_val(record_ptr) as u32;
+        let curr_size = record_size * (self.records.len() as u32);
+        trace!(
+            "RecordStorage record buffer current size: {} max_bytes: {}",
+            curr_size,
+            self.max_kbytes_storage * 1000
+        );
+        if curr_size > (self.max_kbytes_storage as u32 * 1000) {
+            let size_diff = curr_size - (self.max_kbytes_storage * 1000);
+            trace!(
+                "RecordStorage record size_diff: {} sizeof: {}",
+                size_diff,
+                record_size
+            );
+            if size_diff > record_size {
+                let nb_records_to_delete = size_diff / record_size;
+                for _ in 1..nb_records_to_delete {
+                    if !self.records.is_empty() {
+                        self.records.remove(0);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Defines methods for Record instances creation
 /// and storage.
 pub trait RecordManipulator {
-    fn get_sensor_data_passive(&self) -> &HashMap<String, String>;
-    fn get_record_buffer(&mut self) -> &mut Vec<Record>;
-    fn get_record_buffer_passive(&self) -> &Vec<Record>;
-    fn get_buffer_max_kbytes_passive(&self) -> u16;
+    fn get_record_storage(&mut self) -> &mut RecordStorage;
+    fn get_record_storage_passive(&self) -> &RecordStorage;
+    fn get_counter_uj_path_passive(&self) -> &String;
 
-    /// Read a new record from file that stores the RAPL sensors data
-    /// and returns new Record with current unix time
-    fn read_record(&self) -> Result<Record, Box<dyn Error>> {
-        let source_file = self.get_sensor_data_passive().get("source_file").unwrap();
-        debug!("Reading file: {}", source_file);
-        match fs::read_to_string(source_file) {
-            Ok(result) => Ok(Record::new(
-                current_system_time_since_epoch(),
-                result,
-                MicroJoule,
-            )),
-            Err(error) => Err(Box::new(error)),
+    /// Returns Record with energy consumption from the given entity.
+    fn get_entity_consumption(&self) -> Result<Record, Box<dyn Error>> {
+        let source_file = self.get_counter_uj_path_passive();
+
+        match read_record(source_file) {
+            Ok(record) => Ok(record),
+            Err(e) => {
+                warn!(
+                    "Couldn't read record from {}, error was : {:?}",
+                    source_file, e
+                );
+                Err(e)
+            }
         }
     }
 
     /// Computes a new Record, stores it in the record_buffer
     /// and returns a clone of this record.
     fn refresh_record(&mut self) {
-        match self.read_record() {
+        match self.get_entity_consumption() {
             Ok(record) => {
                 debug!("Value: {}", record);
-                self.get_record_buffer().push(record);
-            }
+                self.get_record_storage().add_record(&record);
+            },
             Err(e) => {
-                warn!(
-                    "Couldn't read record from {}, error was : {:?}",
-                    self.get_sensor_data_passive()
-                        .get("source_file")
-                        .unwrap_or(&String::from("SRCFILENOTKNOWN")),
-                    e
-                );
+                warn!("Couldn't refresh record, error was : {:?}", e);
             }
-        }
-
-        if !self.get_record_buffer_passive().is_empty() {
-            self.clean_old_records();
         }
     }
 
@@ -79,7 +222,7 @@ pub trait RecordManipulator {
     /// This does not affect the current buffer but is costly.
     fn get_records_passive(&self) -> Vec<Record> {
         let mut result = vec![];
-        for r in self.get_record_buffer_passive() {
+        for r in &self.get_record_storage_passive().records {
             result.push(Record::new(
                 r.timestamp,
                 r.value.clone(),
@@ -87,42 +230,6 @@ pub trait RecordManipulator {
             ));
         }
         result
-    }
-
-    /// Checks the size in memory of record_buffer and deletes as many Record
-    /// instances from the buffer to make it smaller in memory than buffer_max_kbytes.
-    fn clean_old_records(&mut self) {
-        let buffer_max_kbytes = self.get_buffer_max_kbytes_passive() as u32;
-
-        let record_buffer = self.get_record_buffer();
-        if record_buffer.is_empty() {
-            return
-        }
-
-        let record_ptr = &record_buffer[0];
-        let record_size = size_of_val(record_ptr) as u32;
-        let curr_size = record_size * (record_buffer.len() as u32);
-        trace!(
-            "RecordManipulator record buffer current size: {} max_bytes: {}",
-            curr_size,
-            buffer_max_kbytes * 1000
-        );
-        if curr_size > (buffer_max_kbytes as u32 * 1000) {
-            let size_diff = curr_size - (buffer_max_kbytes * 1000);
-            trace!(
-                "RecordManipulator record size_diff: {} sizeof: {}",
-                size_diff,
-                record_size
-            );
-            if size_diff > record_size {
-                let nb_records_to_delete = size_diff / record_size;
-                for _ in 1..nb_records_to_delete {
-                    if !record_buffer.is_empty() {
-                        record_buffer.remove(0);
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -141,9 +248,14 @@ pub struct Topology {
     /// CPU usage stats buffer
     pub stat_buffer: Vec<CPUStat>,
     /// Measurements of energy usage, stored as Record instances
-    pub record_buffer: Vec<Record>,
+    pub record_storage: RecordStorage,
+    /// Maximum value of the counters for energy consumed by the entire Psys (if available)
+    /// or `(packages + dram) * n_sockets`.
+    /// TODO
+    /// This variable could be set once at the end of the Topology setup.
+    //pub counter_uj_max: String,
     /// Maximum size in memory for the recor_buffer
-    pub buffer_max_kbytes: u16,
+    //pub buffer_max_kbytes: u16,
     /// Sorted list of all domains names
     pub domains_names: Option<Vec<String>>,
     /// Sensor-specific data needed in the topology
@@ -151,88 +263,130 @@ pub struct Topology {
 }
 
 impl RecordManipulator for Topology {
-    fn get_sensor_data_passive(&self) -> &HashMap<String, String> {
-        &self._sensor_data
+    fn get_record_storage(&mut self) -> &mut RecordStorage {
+        &mut self.record_storage
     }
 
-    fn get_record_buffer(&mut self) -> &mut Vec<Record> {
-        &mut self.record_buffer
+    fn get_record_storage_passive(&self) -> &RecordStorage {
+        &self.record_storage
     }
 
-    fn get_record_buffer_passive(&self) -> &Vec<Record> {
-        &self.record_buffer
+    fn get_counter_uj_path_passive(&self) -> &String {
+        // TODO
+        &self.sockets[0].counter_uj_path
     }
 
-    fn get_buffer_max_kbytes_passive(&self) -> u16 {
-        self.buffer_max_kbytes
-    }
+    /// Return PSYS value, if available.
+    /// Otherwise, return sum of (PKG + DRAM domains) for each socket.
+    fn get_entity_consumption(&self) -> Result<Record, Box<dyn Error>> {
+        // TODO check for PSYS availability
 
-    fn read_record(&self) -> Result<Record, Box<dyn Error>> {
-        // if psys is available, return psys
-        // else return pkg + dram + F(disks)
-
-        if let Some(psys_record) = self.get_rapl_psys_energy_microjoules() {
-            debug!("Using PSYS metric");
-            Ok(psys_record)
-        } else {
-            // TODO This could be problematic when dealing with the counter overflow,
-            // because is increases the maximum value for `max_energy_range_uj` file
-            // to the `max_energy_range_uj` * count_of_sockets. There is a workaround
-            // with moduleo in the `get_records_diff_power_microwatts` function.
-            let mut total: i128 = 0;
-            debug!("Suming socket PKG and DRAM metrics to get host metric");
-            for s in &self.sockets {
-                if let Ok(r) = s.read_record() {
-                    match r.value.trim().parse::<i128>() {
-                        Ok(val) => {
-                            total += val;
-            }
-            Err(e) => {
-                            warn!("couldn't convert {} to i128: {}", r.value.trim(), e);
-                        }
+        // Get my (Topology) last Record to compute the increment
+        let previous_value = match self.get_record_storage_passive().get_last_record() {
+            Some(last_record) => {
+                match last_record.value.trim().parse::<u128>() {
+                    Ok(value) => value,
+                    Err(e) => {
+                        error!("Couldn't parse last record value: '{}' - error: {:?}", last_record.value, e);
+                        return Err(e.into())
                     }
                 }
-                for d in &s.domains {
-                    if d.name == "dram" {
-                        if let Ok(dr) = d.read_record() {
-                            match dr.value.trim().parse::<i128>() {
-                                Ok(val) => {
-                                    total += val;
-                                }
-                                Err(e) => {
-                                    warn!("couldn't convert {} to i128: {}", dr.value.trim(), e);
+            },
+            None => 0,
+        };
+
+        // Summarize PKG + DRAM for each socket
+        // (`PKG`/`package` RAPL domain equals socket)
+        let mut value_increment: u128 = 0;
+        for socket in &self.sockets {
+            match socket.get_record_storage_passive().get_last_delta_or_absolute() {
+                Some((delta_value, delta_time)) => {
+                    value_increment += delta_value;
+                },
+                None => {
+                    warn!("Couldn't summarize host consumption due to missing data for socket {}.", socket.id);
+                    /*
+                    // If this function is called for the first time,
+                    // the delta will be the last record.
+                    info!("Summarizing host consumption for the first time. Using first record for the socket {}.", socket.id);
+                    match socket.get_record_storage_passive().get_last_record() {
+                        Some(last_record) => {
+                            value_increment += last_record.value;
+                        },
+                        None => {
+                            warn!("Couldn't summarize host consumption due to missing data for socket {}.", socket.id);
+                        },
+                    }
+                    */
+                }
             }
-        }
+            for domain in socket.get_domains_passive() {
+                // Not DRAM? We need DRAM!
+                if domain.name != "dram" {
+                    continue;
+                }
+
+                match domain.get_record_storage_passive().get_last_delta_or_absolute() {
+                    Some((delta_value, delta_time)) => {
+                        value_increment += delta_value;
+                    },
+                    None => {
+                        warn!("Couldn't summarize host consumption due to missingh data for socket DRAM domain. Socket: {}.", socket.id);
+                        /*
+                        // If this function is called for the first time,
+                        // the delta will be the last record.
+                        info!("Summarizing host consumption for the first time. Using first record for the socket DRAM domain. Socket {}.", socket.id);
+                        match domain.get_record_storage_passive().get_last_record() {
+                            Some(last_record) => {
+                                value_increment += last_record.value;
+                            },
+                            None => {
+                                warn!("Couldn't summarize host consumption due to missingh data for socket DRAM domain. Socket: {}.", socket.id);
+                            },
                         }
+                        */
                     }
                 }
             }
-            Ok(Record::new(
-                current_system_time_since_epoch(),
-                total.to_string(),
-                Unit::MicroJoule,
-            ))
         }
+        
+        let mut new_value = previous_value + value_increment;
+
+        // It is not possible to increment the value indefinitely.
+        // Overflow the value if it exceeds the maximum.
+        let max_value = self.get_record_storage_passive().max_value;
+        if new_value > max_value {
+            let new_value_tmp = new_value - max_value;
+            warn!("Overflowing value for host. Value before overflow: {}, max value: {}, value after overflow: {}", new_value, max_value, new_value_tmp);
+            new_value = new_value_tmp;
+        }
+
+        // TODO add computation of average timestamp
+
+        Ok(Record::new(
+            current_system_time_since_epoch(),
+            new_value.to_string(),
+            Unit::MicroJoule,
+        ))
     }
 }
 
 impl Default for Topology {
     fn default() -> Self {
         {
-            Self::new(HashMap::new())
+            Self::new(0, HashMap::new())
         }
     }
 }
 
 impl Topology {
     /// Instanciates Topology and returns the instance
-    pub fn new(sensor_data: HashMap<String, String>) -> Topology {
+    pub fn new(record_max_value: u128, sensor_data: HashMap<String, String>) -> Topology {
         Topology {
             sockets: vec![],
             proc_tracker: ProcessTracker::new(5),
             stat_buffer: vec![],
-            record_buffer: vec![],
-            buffer_max_kbytes: 1,
+            record_storage: RecordStorage::new(record_max_value),
             domains_names: None,
             _sensor_data: sensor_data,
         }
@@ -277,6 +431,18 @@ impl Topology {
         Some(cores)
     }
 
+    pub fn set_maximum_value(&mut self) {
+        let mut max_value = 0u128;
+        for socket in &self.sockets {
+            max_value += socket.get_record_storage_passive().max_value;
+
+            for domain in socket.get_domains_passive() {
+                max_value += domain.get_record_storage_passive().max_value;
+            }
+        }
+        self.get_record_storage().set_maximum_value(max_value);
+    }
+
     /// Adds a Socket instance to self.sockets if and only if the
     /// socket id doesn't exist already.
     pub fn safe_add_socket(
@@ -285,7 +451,8 @@ impl Topology {
         domains: Vec<Domain>,
         attributes: Vec<Vec<HashMap<String, String>>>,
         counter_uj_path: String,
-        buffer_max_kbytes: u16,
+        counter_uj_max_path: String,
+        record_max_value: u128,
         sensor_data: HashMap<String, String>,
     ) -> Option<CPUSocket> {
         if !self.sockets.iter().any(|s| s.id == socket_id) {
@@ -294,7 +461,8 @@ impl Topology {
                 domains,
                 attributes,
                 counter_uj_path,
-                buffer_max_kbytes,
+                counter_uj_max_path,
+                record_max_value,
                 sensor_data,
             );
             let res = socket.clone();
@@ -350,8 +518,9 @@ impl Topology {
         socket_id: u16,
         domain_id: u16,
         name: &str,
-        uj_counter: &str,
-        buffer_max_kbytes: u16,
+        counter_uj_path: &str,
+        counter_uj_max_path: &str,
+        record_max_value: u128,
         sensor_data: HashMap<String, String>,
     ) {
         let iterator = self.sockets.iter_mut();
@@ -360,14 +529,28 @@ impl Topology {
                 socket.safe_add_domain(Domain::new(
                     domain_id,
                     String::from(name),
-                    String::from(uj_counter),
-                    buffer_max_kbytes,
+                    String::from(counter_uj_path),
+                    String::from(counter_uj_max_path),
+                    record_max_value,
                     sensor_data.clone(),
                 ));
             }
         }
         self.build_domains_names();
     }
+
+    /*
+    /// Set maximum value of the counters for energy consumed by the entire Psys (if available)
+    /// or `(packages + dram) * n_sockets`.
+    /// This founction could be run once at the end of the Topology setup.
+    pub fn set_max_counter_uj(&mut self) {
+        let mut max_counter_uj = 0;
+
+        if let Some(psys) = self.get_psys() {
+
+        }
+    }
+    */
 
     /// Generates CPUCore instances for the host and adds them
     /// to appropriate CPUSocket instance from self.sockets
@@ -490,8 +673,8 @@ impl Topology {
         let size_of_stat = size_of_val(stat_ptr);
         let curr_size = size_of_stat * self.stat_buffer.len();
         trace!("current_size of stats in topo: {}", curr_size);
-        if curr_size > (self.buffer_max_kbytes * 1000) as usize {
-            let size_diff = curr_size - (self.buffer_max_kbytes * 1000) as usize;
+        if curr_size > (self.get_record_storage_passive().max_kbytes_storage * 1000) as usize {
+            let size_diff = curr_size - (self.get_record_storage_passive().max_kbytes_storage * 1000) as usize;
             if size_diff > size_of_stat {
                 let nb_stats_to_delete = size_diff as f32 / size_of_stat as f32;
                 trace!(
@@ -508,23 +691,6 @@ impl Topology {
                 }
             }
         }
-    }
-
-    /// Returns a Record instance containing the difference (attribute by attribute, except timestamp which will be the timestamp from the last record)
-    /// between the last (in time) record from self.record_buffer and the previous one
-    pub fn get_records_diff(&self) -> Option<Record> {
-        let len = self.record_buffer.len();
-        if len > 2 {
-            let last = self.record_buffer.last().unwrap();
-            let previous = self.record_buffer.get(len - 2).unwrap();
-            let last_value = last.value.parse::<u64>().unwrap();
-            let previous_value = previous.value.parse::<u64>().unwrap();
-            if previous_value <= last_value {
-                let diff = last_value - previous_value;
-                return Some(Record::new(last.timestamp, diff.to_string(), last.unit));
-            }
-        }
-        None
     }
 
     /// Returns a CPUStat instance containing the difference between last
@@ -757,7 +923,7 @@ impl Topology {
     pub fn get_process_power_consumption_microwatts(&self, pid: Pid) -> Option<Record> {
         if let Some(record) = self.get_proc_tracker().get_process_last_record(pid) {
             let process_cpu_percentage = self.get_process_cpu_usage_percentage(pid).unwrap();
-            let topo_conso = get_records_diff_power_microwatts(&self.record_buffer);
+            let topo_conso = get_records_diff_power_microwatts(&self.get_record_storage_passive(), "Topology.get_process_power_consumption_microwatts".to_string());
             if let Some(conso) = &topo_conso {
                 let conso_f64 = conso.value.parse::<f64>().unwrap();
                 let result =
@@ -1010,10 +1176,10 @@ pub struct CPUSocket {
     pub attributes: Vec<Vec<HashMap<String, String>>>,
     /// Path to the file that provides the counter for energy consumed by the socket, in microjoules.
     pub counter_uj_path: String,
+    /// Path to the file that provides the max value of the counter for energy consumed by the socket, in microjoules.
+    pub counter_uj_max_path: String,
     /// Comsumption records measured and stored by scaphandre for this socket.
-    pub record_buffer: Vec<Record>,
-    /// Maximum size of the record_buffer in kilobytes.
-    pub buffer_max_kbytes: u16,
+    pub record_storage: RecordStorage,
     /// CPU cores (core_id in /proc/cpuinfo) attached to the socket.
     pub cpu_cores: Vec<CPUCore>,
     /// Usage statistics records stored for this socket.
@@ -1024,20 +1190,16 @@ pub struct CPUSocket {
 }
 
 impl RecordManipulator for CPUSocket {
-    fn get_sensor_data_passive(&self) -> &HashMap<String, String> {
-        &self.sensor_data
+    fn get_record_storage(&mut self) -> &mut RecordStorage {
+        &mut self.record_storage
     }
 
-    fn get_record_buffer(&mut self) -> &mut Vec<Record> {
-        &mut self.record_buffer
+    fn get_record_storage_passive(&self) -> &RecordStorage {
+        &self.record_storage
     }
 
-    fn get_record_buffer_passive(&self) -> &Vec<Record> {
-        &self.record_buffer
-    }
-
-    fn get_buffer_max_kbytes_passive(&self) -> u16 {
-        self.buffer_max_kbytes
+    fn get_counter_uj_path_passive(&self) -> &String {
+        &self.counter_uj_path
     }
 }
 
@@ -1048,7 +1210,8 @@ impl CPUSocket {
         domains: Vec<Domain>,
         attributes: Vec<Vec<HashMap<String, String>>>,
         counter_uj_path: String,
-        buffer_max_kbytes: u16,
+        counter_uj_max_path: String,
+        record_max_value: u128,
         sensor_data: HashMap<String, String>,
     ) -> CPUSocket {
         CPUSocket {
@@ -1056,8 +1219,8 @@ impl CPUSocket {
             domains,
             attributes,
             counter_uj_path,
-            record_buffer: vec![], // buffer has to be empty first
-            buffer_max_kbytes,
+            counter_uj_max_path,
+            record_storage: RecordStorage::new(record_max_value),
             cpu_cores: vec![], // cores are instantiated on a later step
             stat_buffer: vec![],
             sensor_data,
@@ -1118,10 +1281,10 @@ impl CPUSocket {
         trace!("current_size of stats in socket {}: {}", self.id, curr_size);
         trace!(
             "estimated max nb of socket stats: {}",
-            self.buffer_max_kbytes as f32 * 1000.0 / size_of_stat as f32
+            self.get_record_storage_passive().max_kbytes_storage as f32 * 1000.0 / size_of_stat as f32
         );
-        if curr_size > (self.buffer_max_kbytes * 1000) as usize {
-            let size_diff = curr_size - (self.buffer_max_kbytes * 1000) as usize;
+        if curr_size > (self.get_record_storage_passive().max_kbytes_storage * 1000) as usize {
+            let size_diff = curr_size - (self.get_record_storage_passive().max_kbytes_storage * 1000) as usize;
             trace!(
                 "socket {} size_diff: {} size of: {}",
                 self.id,
@@ -1290,29 +1453,25 @@ pub struct Domain {
     pub name: String,
     /// Path to the domain's energy counter file, microjoules extracted
     pub counter_uj_path: String,
+    /// Path to the file that provides the max value of the counter for energy consumed by the socket, in microjoules.
+    pub counter_uj_max_path: String,
     /// History of energy consumption measurements, stored as Record instances
-    pub record_buffer: Vec<Record>,
+    pub record_storage: RecordStorage,
     /// Maximum size of record_buffer, in kilobytes
-    pub buffer_max_kbytes: u16,
-    ///
     #[allow(dead_code)]
     sensor_data: HashMap<String, String>,
 }
 impl RecordManipulator for Domain {
-    fn get_sensor_data_passive(&self) -> &HashMap<String, String> {
-        &self.sensor_data
+    fn get_record_storage(&mut self) -> &mut RecordStorage {
+        &mut self.record_storage
     }
 
-    fn get_record_buffer(&mut self) -> &mut Vec<Record> {
-        &mut self.record_buffer
+    fn get_record_storage_passive(&self) -> &RecordStorage {
+        &self.record_storage
     }
 
-    fn get_record_buffer_passive(&self) -> &Vec<Record> {
-        &self.record_buffer
-    }
-
-    fn get_buffer_max_kbytes_passive(&self) -> u16 {
-        self.buffer_max_kbytes
+    fn get_counter_uj_path_passive(&self) -> &String {
+        &self.counter_uj_path
     }
 }
 impl Domain {
@@ -1321,15 +1480,16 @@ impl Domain {
         id: u16,
         name: String,
         counter_uj_path: String,
-        buffer_max_kbytes: u16,
+        counter_uj_max_path: String,
+        record_max_value: u128,
         sensor_data: HashMap<String, String>,
     ) -> Domain {
         Domain {
             id,
             name,
             counter_uj_path,
-            record_buffer: vec![],
-            buffer_max_kbytes,
+            counter_uj_max_path,
+            record_storage: RecordStorage::new(record_max_value),
             sensor_data,
         }
     }
@@ -1519,82 +1679,37 @@ mod tests {
     }
 }
 
-    /// Returns a Record instance containing the power consumed between
-    /// last and previous measurement, in microwatts.
-    pub fn get_records_diff_power_microwatts(record_buffer: &Vec<Record>) -> Option<Record> {
-        if record_buffer.len() < 2 {
-            return None
+/// Returns Record with a RAPL sensor value from the specified file path.
+fn read_record(file_path: &String) -> Result<Record, Box<dyn Error>> {
+    match fs::read_to_string(file_path) {
+        Ok(data) => Ok(Record::new(
+            current_system_time_since_epoch(),
+            data,
+            MicroJoule
+        )),
+        Err(error) => Err(Box::new(error)),
+    }
+}
+
+/// Returns a Record instance containing the power consumed between
+/// last and previous measurement, in microwatts.
+pub fn get_records_diff_power_microwatts(record_storage: &RecordStorage, caller_name: String) -> Option<Record> {
+    let mut microwatts: u64 = 0;
+
+    match record_storage.get_last_delta() {
+        Some((microjoules, time_diff)) => {
+            microwatts = (microjoules as f64 / time_diff) as u64;
         }
+        None => {
+            return None;
+        }
+    }
 
-            let last_record = record_buffer.last().unwrap();
-            let previous_record = record_buffer
-                .get(record_buffer.len() - 2)
-                .unwrap();
-
-        let mut previous_microjoules = previous_record.value.trim().parse::<u128>().map_err(|e| {
-                warn!(
-                    "Couldn't parse previous_microjoules - value: '{}' - error: {:?}",
-                    previous_record.value.trim(),
-                    e
-                );
-            }).ok()?;
-
-        let mut last_microjoules = last_record.value.trim().parse::<u128>().map_err(|e| {
-                warn!(
-                    "Couldn't parse last_microjoules - value: '{}' - error: {:?}",
-                    previous_record.value.trim(),
-                    e
-                );
-            }).ok()?;
-
-        debug!(
-            "Counting diff between measurements: last = {}, previous = {}",
-            last_microjoules, previous_microjoules
-        );
-
-        // It is possible that the counter doesn't increment
-        if last_microjoules == previous_microjoules {
-            warn!(
-                "Energy counter didn't increase between measurements: last = {}, previous = {}",
-                last_microjoules, previous_microjoules
-            );
-
-        // Detect energy counter overflow
-        } else if last_microjoules < previous_microjoules {
-                warn!(
-                    "Energy counter overflow detected: last = {}, previous = {}",
-                    last_microjoules, previous_microjoules
-                );
-
-            // TODO Workaround because the records for topology could cumulate maximum across all sockets
-            previous_microjoules = previous_microjoules % 65532610987;
-            last_microjoules = last_microjoules % 65532610987;
-
-            // Correction of the overflow
-            last_microjoules += 65532610987;
-
-
-
-            if previous_microjoules > 65532610987 {
-                error!("Something went wrong. previous_microjoules is greater than 65532610987. Caller name {}", caller_name);
-            }
-                // Hard-coded /sys/class/powercap/intel-rapl/intel-rapl\:0/max_energy_range_uj
-                // AMD EPYC 7543
-            // 65532610987 (amd?)
-            // Intel(R) Core(TM) i5-7400
-            // 262143328850 (intel?)
-            };
-
-        let microjoules = last_microjoules - previous_microjoules;
-            let time_diff = last_record.timestamp.as_secs_f64()
-                - previous_record.timestamp.as_secs_f64();
-            let microwatts = microjoules as f64 / time_diff;
-
-            return Some(Record::new(
-                last_record.timestamp,
-                (microwatts as u64).to_string(),
-                units::Unit::MicroWatt,
-            ));
+    return Some(Record::new(
+        record_storage.get_last_record().unwrap().timestamp,
+        (microwatts as u64).to_string(),
+        units::Unit::MicroWatt,
+    ));
 }
 
 //  Copyright 2020 The scaphandre authors.

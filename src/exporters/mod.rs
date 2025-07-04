@@ -344,7 +344,7 @@ impl MetricGenerator {
         }
 
         let topo_stat_buffer_len = self.topology.stat_buffer.len();
-        let topo_record_buffer_len = self.topology.record_buffer.len();
+        let topo_record_buffer_len = self.topology.get_record_storage_passive().records.len();
         let topo_procs_len = self.topology.proc_tracker.procs.len();
 
         self.data.push(Metric {
@@ -415,7 +415,7 @@ impl MetricGenerator {
                 description: String::from(
                     "Number of energy consumption Records stored for each socket",
                 ),
-                metric_value: MetricValueType::IntUnsigned(socket.record_buffer.len() as u64),
+                metric_value: MetricValueType::IntUnsigned(socket.get_record_storage_passive().records.len() as u64),
             });
 
             for domain in &socket.domains {
@@ -433,7 +433,7 @@ impl MetricGenerator {
                     description: String::from(
                         "Number of energy consumption Records stored for a Domain",
                     ),
-                    metric_value: MetricValueType::IntUnsigned(domain.record_buffer.len() as u64),
+                    metric_value: MetricValueType::IntUnsigned(domain.get_record_storage_passive().records.len() as u64),
                 });
             }
         }
@@ -441,7 +441,7 @@ impl MetricGenerator {
 
     /// Generate host metrics.
     fn gen_host_metrics(&mut self) {
-        let records = self.topology.get_records_passive();
+        let records = &self.topology.get_record_storage_passive().records;
 
         // metrics
         if !records.is_empty() {
@@ -480,7 +480,7 @@ impl MetricGenerator {
                     metric_value: MetricValueType::Text(host_energy_microjoules),
                 });
 
-            if let Some(power) = get_records_diff_power_microwatts(&self.topology.record_buffer) {
+            if let Some(power) = get_records_diff_power_microwatts(&self.topology.get_record_storage_passive(), "MetricGenerator.gen_host_metrics".to_string()) {
                 self.data.push(Metric {
                     name: String::from("scaph_host_power_microwatts"),
                     metric_type: String::from("gauge"),
@@ -659,7 +659,7 @@ impl MetricGenerator {
                     metric_value: MetricValueType::Text(metric_value.clone()),
                 });
 
-                if let Some(power) = get_records_diff_power_microwatts(&socket.record_buffer) {
+                if let Some(power) = get_records_diff_power_microwatts(&socket.get_record_storage_passive(), "MetricGenerator.gen_socket_metrics, l662".to_string()) {
                     let socket_power_microwatts = &power.value;
 
                     self.data.push(Metric {
@@ -722,7 +722,7 @@ impl MetricGenerator {
                         metric_value: MetricValueType::Text(metric_value.clone()),
                     });
 
-                    if let Some(power) = get_records_diff_power_microwatts(&domain.record_buffer) {
+                    if let Some(power) = get_records_diff_power_microwatts(&domain.get_record_storage_passive(), "MetricGenerator.gen_socket_metrics, l725".to_string()) {
                         let domain_power_microwatts = &power.value;
                         self.data.push(Metric {
                             name: String::from("scaph_domain_power_microwatts"),
@@ -926,7 +926,7 @@ impl MetricGenerator {
         }
         debug!("Before loop.");
 
-        let topo_conso = get_records_diff_power_microwatts(&self.topology.record_buffer);
+        let topo_conso = get_records_diff_power_microwatts(&self.topology.get_record_storage_passive(), "Topology.get_all_per_process".to_string());
 
         for pid in self.topology.proc_tracker.get_alive_pids() {
             let exe = self.topology.proc_tracker.get_process_name(pid);

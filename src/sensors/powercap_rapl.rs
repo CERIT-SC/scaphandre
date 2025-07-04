@@ -73,7 +73,11 @@ impl Sensor for PowercapRAPLSensor {
         if modules_state.is_err() && !self.virtual_machine {
             warn!("Couldn't find intel_rapl modules.");
         }
-        let mut topo = Topology::new(HashMap::new());
+
+        // TODO
+        let magic_max_value = 65532610987; // AMD
+        //let magic_max_value = 262143328850; // Intel
+        let mut topo = Topology::new(magic_max_value, HashMap::new());
         let re_socket = Regex::new(r"^.*/intel-rapl:\d+$").unwrap();
         let re_domain = Regex::new(r"^.*/intel-rapl:\d+:\d+$").unwrap();
         let re_socket_mmio = Regex::new(r"^.*/intel-rapl-mmio:\d+$").unwrap();
@@ -82,6 +86,7 @@ impl Sensor for PowercapRAPLSensor {
         for folder in fs::read_dir(&self.base_path).unwrap() {
             let folder_name = String::from(folder.unwrap().path().to_str().unwrap());
             info!("working on {folder_name}");
+
             // let's catch domain folders
             if re_domain.is_match(&folder_name) {
                 re_domain_matched = true;
@@ -100,7 +105,8 @@ impl Sensor for PowercapRAPLSensor {
                     vec![],
                     vec![],
                     format!("{}/intel-rapl:{}/energy_uj", self.base_path, socket_id),
-                    self.buffer_per_socket_max_kbytes,
+                    format!("{}/intel-rapl:{}/max_energy_range_uj", self.base_path, socket_id),
+                    magic_max_value,
                     sensor_data_for_socket,
                 );
                 let mut sensor_data_for_domain = HashMap::new();
@@ -116,11 +122,9 @@ impl Sensor for PowercapRAPLSensor {
                         socket_id,
                         domain_id,
                         domain_name.trim(),
-                        &format!(
-                            "{}/intel-rapl:{}:{}/energy_uj",
-                            self.base_path, socket_id, domain_id
-                        ),
-                        self.buffer_per_domain_max_kbytes,
+                        &format!("{}/intel-rapl:{}:{}/energy_uj", self.base_path, socket_id, domain_id),
+                        &format!("{}/intel-rapl:{}:{}/max_energy_range_uj", self.base_path, socket_id, domain_id),
+                        magic_max_value,
                         sensor_data_for_domain,
                     );
                 }
@@ -179,7 +183,8 @@ impl Sensor for PowercapRAPLSensor {
                             vec![],
                             vec![],
                             format!("{}/intel-rapl:{}/energy_uj", self.base_path, socket_id),
-                            self.buffer_per_socket_max_kbytes,
+                            format!("{}/intel-rapl:{}/max_energy_range_uj", self.base_path, socket_id),
+                            magic_max_value,
                             sensor_data_for_socket,
                         );
                         found = true;
@@ -189,7 +194,7 @@ impl Sensor for PowercapRAPLSensor {
                 }
             }
             if !found {
-                warn!("Could'nt find any RAPL PKG domain (nor psys).");
+                warn!("Couldn't find any RAPL PKG domain (nor psys).");
             }
         }
         for folder in fs::read_dir(&self.base_path).unwrap() {
@@ -208,6 +213,8 @@ impl Sensor for PowercapRAPLSensor {
             }
         }
         topo.add_cpu_cores();
+        // TODO the maximum value is already set in the topology contructor!
+        topo.set_maximum_value();
         Ok(topo)
     }
 
