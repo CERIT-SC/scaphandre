@@ -66,6 +66,28 @@ impl PowercapRAPLSensor {
     }
 }
 
+/// Returns maximum value of the RAPL sensor from the specified file path.
+fn get_rapl_max_value(file_path: &String) -> Result<u128, Box<dyn Error>> {
+    match fs::read_to_string(file_path) {
+        Ok(value_str) => {
+            match value_str.trim().parse::<u128>() {
+                Ok(value) => {
+                    info!("Maximum RAPL value set to {} from file {}", value, file_path);
+                    Ok(value)
+                },
+                Err(e) => {
+                    error!("Couldn't parse maximum RAPL value: '{}' from file: '{}' - error: {:?}", value_str.trim(), file_path, e);
+                    Err(Box::new(e))
+                }
+            }
+        },
+        Err(e) => {
+            error!("Couldn't read maximum RAPL value from file: '{}' - error: {:?}", file_path, e);
+            Err(Box::new(e))
+        }
+    }
+}
+
 impl Sensor for PowercapRAPLSensor {
     /// Creates a Topology instance.
     fn generate_topology(&self) -> Result<Topology, Box<dyn Error>> {
@@ -74,10 +96,7 @@ impl Sensor for PowercapRAPLSensor {
             warn!("Couldn't find intel_rapl modules.");
         }
 
-        // TODO
-        let magic_max_value = 65532610987; // AMD
-        //let magic_max_value = 262143328850; // Intel
-        let mut topo = Topology::new(magic_max_value, HashMap::new());
+        let mut topo = Topology::new(0u128, HashMap::new());
         let re_socket = Regex::new(r"^.*/intel-rapl:\d+$").unwrap();
         let re_domain = Regex::new(r"^.*/intel-rapl:\d+:\d+$").unwrap();
         let re_socket_mmio = Regex::new(r"^.*/intel-rapl-mmio:\d+$").unwrap();
@@ -105,8 +124,7 @@ impl Sensor for PowercapRAPLSensor {
                     vec![],
                     vec![],
                     format!("{}/intel-rapl:{}/energy_uj", self.base_path, socket_id),
-                    format!("{}/intel-rapl:{}/max_energy_range_uj", self.base_path, socket_id),
-                    magic_max_value,
+                    get_rapl_max_value( &format!("{}/intel-rapl:{}/max_energy_range_uj", self.base_path, socket_id))?,
                     sensor_data_for_socket,
                 );
                 let mut sensor_data_for_domain = HashMap::new();
@@ -123,8 +141,7 @@ impl Sensor for PowercapRAPLSensor {
                         domain_id,
                         domain_name.trim(),
                         &format!("{}/intel-rapl:{}:{}/energy_uj", self.base_path, socket_id, domain_id),
-                        &format!("{}/intel-rapl:{}:{}/max_energy_range_uj", self.base_path, socket_id, domain_id),
-                        magic_max_value,
+                        get_rapl_max_value(&format!("{}/intel-rapl:{}:{}/max_energy_range_uj", self.base_path, socket_id, domain_id))?,
                         sensor_data_for_domain,
                     );
                 }
@@ -183,8 +200,7 @@ impl Sensor for PowercapRAPLSensor {
                             vec![],
                             vec![],
                             format!("{}/intel-rapl:{}/energy_uj", self.base_path, socket_id),
-                            format!("{}/intel-rapl:{}/max_energy_range_uj", self.base_path, socket_id),
-                            magic_max_value,
+                            get_rapl_max_value(&format!("{}/intel-rapl:{}/max_energy_range_uj", self.base_path, socket_id))?,
                             sensor_data_for_socket,
                         );
                         found = true;

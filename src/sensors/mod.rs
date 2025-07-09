@@ -451,7 +451,6 @@ impl Topology {
         domains: Vec<Domain>,
         attributes: Vec<Vec<HashMap<String, String>>>,
         counter_uj_path: String,
-        counter_uj_max_path: String,
         record_max_value: u128,
         sensor_data: HashMap<String, String>,
     ) -> Option<CPUSocket> {
@@ -461,7 +460,6 @@ impl Topology {
                 domains,
                 attributes,
                 counter_uj_path,
-                counter_uj_max_path,
                 record_max_value,
                 sensor_data,
             );
@@ -519,7 +517,6 @@ impl Topology {
         domain_id: u16,
         name: &str,
         counter_uj_path: &str,
-        counter_uj_max_path: &str,
         record_max_value: u128,
         sensor_data: HashMap<String, String>,
     ) {
@@ -530,7 +527,6 @@ impl Topology {
                     domain_id,
                     String::from(name),
                     String::from(counter_uj_path),
-                    String::from(counter_uj_max_path),
                     record_max_value,
                     sensor_data.clone(),
                 ));
@@ -1176,8 +1172,6 @@ pub struct CPUSocket {
     pub attributes: Vec<Vec<HashMap<String, String>>>,
     /// Path to the file that provides the counter for energy consumed by the socket, in microjoules.
     pub counter_uj_path: String,
-    /// Path to the file that provides the max value of the counter for energy consumed by the socket, in microjoules.
-    pub counter_uj_max_path: String,
     /// Comsumption records measured and stored by scaphandre for this socket.
     pub record_storage: RecordStorage,
     /// CPU cores (core_id in /proc/cpuinfo) attached to the socket.
@@ -1210,7 +1204,6 @@ impl CPUSocket {
         domains: Vec<Domain>,
         attributes: Vec<Vec<HashMap<String, String>>>,
         counter_uj_path: String,
-        counter_uj_max_path: String,
         record_max_value: u128,
         sensor_data: HashMap<String, String>,
     ) -> CPUSocket {
@@ -1219,7 +1212,6 @@ impl CPUSocket {
             domains,
             attributes,
             counter_uj_path,
-            counter_uj_max_path,
             record_storage: RecordStorage::new(record_max_value),
             cpu_cores: vec![], // cores are instantiated on a later step
             stat_buffer: vec![],
@@ -1453,8 +1445,6 @@ pub struct Domain {
     pub name: String,
     /// Path to the domain's energy counter file, microjoules extracted
     pub counter_uj_path: String,
-    /// Path to the file that provides the max value of the counter for energy consumed by the socket, in microjoules.
-    pub counter_uj_max_path: String,
     /// History of energy consumption measurements, stored as Record instances
     pub record_storage: RecordStorage,
     /// Maximum size of record_buffer, in kilobytes
@@ -1480,7 +1470,6 @@ impl Domain {
         id: u16,
         name: String,
         counter_uj_path: String,
-        counter_uj_max_path: String,
         record_max_value: u128,
         sensor_data: HashMap<String, String>,
     ) -> Domain {
@@ -1488,7 +1477,6 @@ impl Domain {
             id,
             name,
             counter_uj_path,
-            counter_uj_max_path,
             record_storage: RecordStorage::new(record_max_value),
             sensor_data,
         }
