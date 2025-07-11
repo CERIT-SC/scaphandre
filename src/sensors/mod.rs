@@ -11,6 +11,8 @@ use msr_rapl::get_msr_value;
 pub mod powercap_rapl;
 pub mod units;
 pub mod utils;
+#[cfg(feature = "nvidia")]
+pub mod nvml;
 #[cfg(target_os = "linux")]
 use procfs::{CpuInfo, CpuTime, KernelStats};
 use std::{collections::HashMap, error::Error, fmt, fs, mem::size_of_val, str, time::Duration};
@@ -18,6 +20,8 @@ use std::{collections::HashMap, error::Error, fmt, fs, mem::size_of_val, str, ti
 use sysinfo::{CpuExt, Pid, System, SystemExt};
 use sysinfo::{DiskExt, DiskType};
 use utils::{current_system_time_since_epoch, IProcess, ProcessTracker};
+#[cfg(feature = "nvidia")]
+use crate::sensors::nvml::{NvidiaNVML};
 use crate::sensors::units::Unit;
 use crate::sensors::units::Unit::MicroJoule;
 
@@ -243,6 +247,9 @@ pub trait RecordManipulator {
 pub struct Topology {
     /// The CPU sockets found on the host, represented as CPUSocket instances attached to this topology
     pub sockets: Vec<CPUSocket>,
+    /// The supported GPUs found on the host
+    #[cfg(feature = "nvidia")]
+    pub gpu_nvml: Option<NvidiaNVML>,
     /// ProcessTrack instance that keeps track of processes running on the host and CPU stats associated
     pub proc_tracker: ProcessTracker,
     /// CPU usage stats buffer
@@ -384,6 +391,7 @@ impl Topology {
     pub fn new(record_max_value: u128, sensor_data: HashMap<String, String>) -> Topology {
         Topology {
             sockets: vec![],
+            gpu_nvml: None,
             proc_tracker: ProcessTracker::new(5),
             stat_buffer: vec![],
             record_storage: RecordStorage::new(record_max_value),
@@ -441,6 +449,10 @@ impl Topology {
             }
         }
         self.get_record_storage().set_maximum_value(max_value);
+    }
+
+    pub fn add_gpus(&mut self) {
+        self.gpu_nvml = NvidiaNVML::new();
     }
 
     /// Adds a Socket instance to self.sockets if and only if the
@@ -620,6 +632,9 @@ impl Topology {
             //for c in cores {
             //
             //}
+        }
+        if self.gpu_nvml.is_some() {
+            self.gpu_nvml.as_mut().unwrap().refresh_records();
         }
         self.proc_tracker.refresh();
         self.refresh_procs();
@@ -936,7 +951,7 @@ impl Topology {
         None
     }
 
-    pub fn get_all_per_process(&self, pid: Pid, topo_conso: &Option<Record>) -> Option<HashMap<String, (String, Record)>> {
+    pub fn get_all_per_process(&self, pid: Pid, topo_conso: &Option<Record>, gpu_extra_power: f64) -> Option<HashMap<String, (String, Record)>> {
         let mut res = HashMap::new();
         if let Some(record) = self.get_proc_tracker().get_process_last_record(pid) {
             let process_cpu_percentage =
@@ -1019,11 +1034,16 @@ impl Topology {
             );
             if let Some(conso) = &topo_conso {
                 let conso_f64 = conso.value.parse::<f64>().unwrap();
-                let result = (conso_f64 * process_cpu_percentage as f64) / 100.0_f64;
+                let mut result = (conso_f64 * process_cpu_percentage as f64) / 100.0_f64;
+
+                if gpu_extra_power > 0.0 {
+                    info!("PID {} consumes extra power from GPU", pid.to_string());
+                    result += gpu_extra_power;
+                }
                 res.insert(
                     String::from("scaph_process_power_consumption_microwatts"),
                     (
-                        String::from("Total data read on disk by the process, in bytes"),
+                        String::from("Power consumption of the process, in microwatts"),
                         Record::new(record.timestamp, result.to_string(), units::Unit::MicroWatt),
                     ),
                 );

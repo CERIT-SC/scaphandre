@@ -20,6 +20,7 @@ use crate::sensors::{
     utils::{current_system_time_since_epoch, IProcess},
     RecordManipulator, Topology, get_records_diff_power_microwatts
 };
+use sysinfo::PidExt;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::fmt;
@@ -829,6 +830,46 @@ impl MetricGenerator {
         }
     }
 
+    fn gen_gpu_metrics(&mut self) {
+        trace!("In gen_gpu_metrics.");
+        let default_timestamp = current_system_time_since_epoch();
+
+        let gpu_nvml_opt = &self.topology.gpu_nvml;
+        if gpu_nvml_opt.is_none() {
+            info!("topology.gpu_nvml is null. No GPU metrics will be generated.");
+            return;
+        }
+
+        let gpu_nvml = gpu_nvml_opt.as_ref().unwrap();
+
+        for i in 0..gpu_nvml.get_gpus_count() {
+            let gpu = &gpu_nvml.gpus[i];
+            let records = gpu.get_records_passive();
+            if !records.is_empty() {
+                let metric = records.last().unwrap();
+
+                let mut attributes = HashMap::new();
+                attributes.insert("index".to_string(), gpu.index.to_string());
+                attributes.insert("vendor".to_string(), gpu.vendor.to_string());
+                attributes.insert("model".to_string(), gpu.model.to_string());
+                attributes.insert("architecture".to_string(), gpu.arch.to_string());
+
+                self.data.push(Metric {
+                    name: String::from("scaph_gpu_power_microwatts"),
+                    metric_type: String::from("gauge"),
+                    ttl: 60.0,
+                    timestamp: default_timestamp,
+                    hostname: self.hostname.clone(),
+                    state: String::from("ok"),
+                    tags: vec!["scaphandre".to_string()],
+                    attributes: attributes.clone(),
+                    description: String::from("Power measured relative to GPU, in microwatts"),
+                    metric_value: MetricValueType::Text(metric.value.clone()),
+                });
+            }
+        }
+    }
+
     /// If *self.watch_docker* is true and *self.docker_client* is Some
     /// gets the list of docker containers running on the machine, thanks
     /// to *self.docker_client*. Stores the resulting vector as *self.containers*.
@@ -873,6 +914,17 @@ impl MetricGenerator {
     /// Generate process metrics.
     fn gen_process_metrics(&mut self) {
         trace!("In gen_process_metrics.");
+
+        let parse_value = |value: &String| -> Option<f64> {
+            value.trim().parse::<f64>().map_err(|e| {
+                warn!(
+                    "Couldn't parse record value: '{}' - error: {:?}",
+                    value,
+                    e
+                );
+            }).ok()
+        };
+
         #[cfg(feature = "containers")]
         if self.watch_containers {
             let now = current_system_time_since_epoch().as_secs().to_string();
@@ -955,6 +1007,33 @@ impl MetricGenerator {
                 }
             }
 
+            #[cfg(feature = "nvidia")]
+            let mut gpu_extra_power = 0_f64;
+            #[cfg(feature = "nvidia")]
+            if let Some(nvidia_nvml) = &self.topology.gpu_nvml {
+                for gpu in &nvidia_nvml.gpus {
+                    let pid_last_util = gpu.get_pid_last_util(pid.as_u32());
+                    let records = gpu.get_records_passive();
+                    let gpu_last_power = records.last();
+                    if pid_last_util.is_none() || gpu_last_power.is_none() {
+                        continue;
+                    }
+
+                    let pid_last_util = pid_last_util.unwrap();
+                    let gpu_last_power = gpu_last_power.unwrap();
+
+                    match parse_value(&gpu_last_power.value){
+                        None => continue,
+                        Some(last_gpu_power_value) => {
+                            let extra_pid_gpu_power = (pid_last_util.sm_util as f64 / 100 as f64) * last_gpu_power_value as f64;
+                            info!("PID {} utilized {}% of GPU power with {} uW", pid.to_string(), pid_last_util.sm_util, extra_pid_gpu_power);
+                            gpu_extra_power += extra_pid_gpu_power;
+                            attributes.insert("gpu".to_string(), "true".to_string());
+                        },
+                    }
+                }
+            }
+
             attributes.insert("pid".to_string(), pid.to_string());
 
             attributes.insert("exe".to_string(), exe.clone());
@@ -970,19 +1049,20 @@ impl MetricGenerator {
                 }
             }
 
-            if let Some(metrics) = self.topology.get_all_per_process(pid, &topo_conso) {
+            if let Some(metrics) = self.topology.get_all_per_process(pid, &topo_conso, gpu_extra_power) {
                 for (k, v) in metrics {
+                    let record = &v.1;
                     self.data.push(Metric {
                         name: k,
                         metric_type: String::from("gauge"),
                         ttl: 60.0,
-                        timestamp: v.1.timestamp,
+                        timestamp: record.timestamp,
                         hostname: self.hostname.clone(),
                         state: String::from("ok"),
                         tags: vec!["scaphandre".to_string()],
                         attributes: attributes.clone(),
                         description: v.0,
-                        metric_value: MetricValueType::Text(v.1.value),
+                        metric_value: MetricValueType::Text(record.value.clone()),
                     })
                 }
             }
@@ -1013,6 +1093,11 @@ impl MetricGenerator {
         self.gen_system_metrics();
         info!(
             "{}: Get process metrics",
+            Utc::now().format("%Y-%m-%dT%H:%M:%S")
+        );
+        self.gen_gpu_metrics();
+        info!(
+            "{}: Get GPU metrics",
             Utc::now().format("%Y-%m-%dT%H:%M:%S")
         );
         self.gen_process_metrics();

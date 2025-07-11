@@ -1,4 +1,5 @@
 use crate::sensors::{Sensor, Topology};
+use crate::sensors::nvml::NvidiaNVML;
 use procfs::{modules, KernelModule};
 use regex::Regex;
 use std::collections::HashMap;
@@ -229,6 +230,7 @@ impl Sensor for PowercapRAPLSensor {
             }
         }
         topo.add_cpu_cores();
+        topo.add_gpus();
         // TODO the maximum value is already set in the topology contructor!
         topo.set_maximum_value();
         Ok(topo)
