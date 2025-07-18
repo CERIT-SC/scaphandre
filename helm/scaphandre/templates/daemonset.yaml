@@ -21,25 +21,17 @@ spec:
         image: "{{ .Values.image.name }}:{{ .Values.image.tag }}"
         imagePullPolicy: "{{ .Values.image.pullPolicy }}"
         args:
-            {{- range $key, $value := .Values.scaphandre.args }}
-            {{- if $value }}
-            - --{{ $key }}={{ $value }}
-            {{- else }}
-            - --{{ $key }}
-            {{- end }}
-            {{- end }}
-            - {{ .Values.scaphandre.command }}
-            {{- range $key, $value := .Values.scaphandre.extraArgs }}
-            {{- if $value }}
-            - --{{ $key }}={{ $value }}
-            {{- else }}
-            - --{{ $key }}
-            {{- end }}
-            {{- end }}
+        {{- range .Values.scaphandre.args }}
+        - {{ . }}
+        {{- end }}
         env:
         {{- if .Values.scaphandre.rustBacktrace }}
         - name: RUST_BACKTRACE
           value: '{{ .Values.scaphandre.rustBacktrace }}'
+        {{- end }}
+        {{- if .Values.scaphandre.measureNvidia }}
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: all
         {{- end }}
         ports:
         - name: metrics
@@ -53,6 +45,10 @@ spec:
         - mountPath: /sys/class/powercap
           name: powercap
           readOnly: false
+        {{- if .Values.scaphandre.measureNvidia }}
+        securityContext:
+          privileged: true
+        {{- end }}
       securityContext:
         runAsUser: {{ .Values.userID }}
         runAsGroup: {{ .Values.userGroup }}

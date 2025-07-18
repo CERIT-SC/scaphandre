@@ -13,11 +13,12 @@ resources:
     memory: 100Mi
 
 scaphandre:
-  command: prometheus
-  args: {}
-  extraArgs:
-    containers:
+  args:
+  - "-v"
+  - "prometheus"
+  - "--containers"
 #  rustBacktrace: '1'
+  measureNvidia: true
 
 # Run as root user to get proper permissions
 userID: 0
