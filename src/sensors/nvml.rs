@@ -144,7 +144,11 @@ impl NvidiaNVML {
             }
 
             if let Err(e) = self.refresh_process_utilization(i) {
-                warn!("Failed to refresh process utilization for GPU with index {}. Error: {}", i, e);
+                if matches!(e.downcast_ref::<NvmlError>(), Some(NvmlError::NotFound)) {
+                    debug!("No process found on GPU with index {}.");
+                } else {
+                    warn!("Failed to refresh process utilization for GPU with index {}. Error: {}", i, e);
+                }
             }
 
             info!(
