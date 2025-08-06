@@ -1029,6 +1029,7 @@ impl MetricGenerator {
                             info!("PID {} utilized {}% of GPU power with {} uW", pid.to_string(), pid_last_util.sm_util, extra_pid_gpu_power);
                             gpu_extra_power += extra_pid_gpu_power;
                             attributes.insert("gpu".to_string(), "true".to_string());
+                            attributes.insert("gpu_index".to_string(), gpu.index.to_string());
                         },
                     }
                 }
