@@ -830,6 +830,7 @@ impl MetricGenerator {
         }
     }
 
+    #[cfg(feature = "nvidia")]
     fn gen_gpu_metrics(&mut self) {
         trace!("In gen_gpu_metrics.");
         let default_timestamp = current_system_time_since_epoch();
@@ -1007,7 +1008,7 @@ impl MetricGenerator {
                 }
             }
 
-            #[cfg(feature = "nvidia")]
+            // Init gpu extra power to 0 at least for disabled nvidia feature
             let mut gpu_extra_power = 0_f64;
             #[cfg(feature = "nvidia")]
             if let Some(nvidia_nvml) = &self.topology.gpu_nvml {
@@ -1096,7 +1097,9 @@ impl MetricGenerator {
             "{}: Get process metrics",
             Utc::now().format("%Y-%m-%dT%H:%M:%S")
         );
+        #[cfg(feature = "nvidia")]
         self.gen_gpu_metrics();
+        #[cfg(feature = "nvidia")]
         info!(
             "{}: Get GPU metrics",
             Utc::now().format("%Y-%m-%dT%H:%M:%S")

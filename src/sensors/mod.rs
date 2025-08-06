@@ -21,7 +21,7 @@ use sysinfo::{CpuExt, Pid, System, SystemExt};
 use sysinfo::{DiskExt, DiskType};
 use utils::{current_system_time_since_epoch, IProcess, ProcessTracker};
 #[cfg(feature = "nvidia")]
-use crate::sensors::nvml::{NvidiaNVML};
+use crate::sensors::nvml::NvidiaNVML;
 use crate::sensors::units::Unit;
 use crate::sensors::units::Unit::MicroJoule;
 
@@ -391,6 +391,7 @@ impl Topology {
     pub fn new(record_max_value: u128, sensor_data: HashMap<String, String>) -> Topology {
         Topology {
             sockets: vec![],
+            #[cfg(feature = "nvidia")]
             gpu_nvml: None,
             proc_tracker: ProcessTracker::new(5),
             stat_buffer: vec![],
@@ -451,6 +452,7 @@ impl Topology {
         self.get_record_storage().set_maximum_value(max_value);
     }
 
+    #[cfg(feature = "nvidia")]
     pub fn add_gpus(&mut self) {
         self.gpu_nvml = NvidiaNVML::new();
     }
@@ -633,6 +635,7 @@ impl Topology {
             //
             //}
         }
+        #[cfg(feature = "nvidia")]
         if self.gpu_nvml.is_some() {
             self.gpu_nvml.as_mut().unwrap().refresh_records();
         }
