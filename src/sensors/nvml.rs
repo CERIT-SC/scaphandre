@@ -21,22 +21,18 @@ pub struct NvidiaNVMLGpu {
 
 impl NvidiaNVMLGpu {
     pub fn new(nvml: &Nvml, index: u32) -> Result<NvidiaNVMLGpu, Box<dyn Error>> {
-        match nvml.device_by_index(index as u32) {
-            Err(e) => Err(Box::new(e)),
-            Ok(device) => {
-                let model = device.name()?.to_string();
-                let arch= device.architecture()?.to_string();
+        let device = nvml.device_by_index(index)?;
+        let model = device.name()?.to_string();
+        let arch = device.architecture()?.to_string();
 
-                Ok(NvidiaNVMLGpu {
-                    index: index,
-                    vendor: "nvidia".to_string(),
-                    model: model,
-                    arch: arch,
-                    record_storage: RecordStorage::new(0),
-                    proc_utils: vec![],
-                })
-            }
-        }
+        Ok(NvidiaNVMLGpu {
+            index,
+            vendor: "nvidia".to_string(),
+            model,
+            arch,
+            record_storage: RecordStorage::new(0),
+            proc_utils: Vec::new(),
+        })
     }
 
     /// Returns a new owned Vector being a clone of the current record_buffer.
@@ -94,7 +90,7 @@ impl NvidiaNVML {
 
         info!("Nvidia GPUs found! Count: {}", gpus_count);
 
-        let mut gpus: Vec<NvidiaNVMLGpu> = vec![];
+        let mut gpus = Vec::with_capacity(gpus_count as usize);
         for i in 0..gpus_count {
             match NvidiaNVMLGpu::new(&nvml, i) {
                 Ok(gpu) => gpus.push(gpu),
@@ -123,15 +119,14 @@ impl NvidiaNVML {
 
     pub fn get_gpu_consumption(&self, index: usize) -> Result<Record, Box<dyn Error>> {
         let device = self.get_device(index)?;
-        match device.power_usage() {
-            // power_usage returns value in milli. We need micro.
-            Ok(value) => Ok(Record::new(
-                current_system_time_since_epoch(),
-                (value * 1000).to_string(),
-                Unit::MicroWatt
-            )),
-            Err(e) => Err(Box::new(e)),
-        }
+        let power_usage_milliwatts = device.power_usage()?;
+        // power_usage returns value in milli. We need micro.
+        let power_usage_microwatts = (power_usage_milliwatts * 1000).to_string();
+        Ok(Record::new(
+            current_system_time_since_epoch(),
+            power_usage_microwatts,
+            Unit::MicroWatt,
+        ))
     }
 
     pub fn refresh_process_utilization(&mut self, index: usize) -> Result<(), Box<dyn Error>> {
@@ -145,12 +140,17 @@ impl NvidiaNVML {
         for i in 0..self.get_gpus_count() {
             match self.get_gpu_consumption(i) {
                 Ok(record) => self.gpus[i].record_storage.add_record(&record),
-                Err(e) => {
-                    warn!("Failed to refresh record for GPU with index {}.", i.to_string());
-                }
+                Err(e) => warn!("Failed to refresh record for GPU with index {}. Error: {}", i, e),
             }
-            self.refresh_process_utilization(i);
-            info!("Refreshing records for GPU. Count of records: {}", self.gpus[i].record_storage.records.len());
+
+            if let Err(e) = self.refresh_process_utilization(i) {
+                warn!("Failed to refresh process utilization for GPU with index {}. Error: {}", i, e);
+            }
+
+            info!(
+                "Refreshing records for GPU. Count of records: {}",
+                self.gpus[i].record_storage.records.len()
+            );
         }
     }
 }
