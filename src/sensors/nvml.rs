@@ -2,6 +2,7 @@ use nvml_wrapper::enum_wrappers::device::{Clock, TemperatureSensor};
 use nvml_wrapper::error::NvmlError;
 use nvml_wrapper::struct_wrappers::device::ProcessUtilizationSample;
 use nvml_wrapper::{cuda_driver_version_major, cuda_driver_version_minor, Nvml, Device};
+use pci_info::PciInfo;
 use std::error::Error;
 use crate::sensors::{Record, RecordStorage};
 use crate::sensors::current_system_time_since_epoch;
@@ -72,10 +73,34 @@ pub struct NvidiaNVML {
 
 impl NvidiaNVML {
     pub fn new() -> Option<NvidiaNVML> {
+        // Detect GPU before NVML initialization
+        let info = PciInfo::enumerate_pci().unwrap();
+        let mut nvidia = false;
+
+        for r in info {
+            match r {
+                Ok(device) => {
+                    if device.vendor_id() == 0x10DE {
+                        nvidia = true;
+                        break;
+                    }
+                },
+                Err(error) => {}
+            }
+        }
+
+        if nvidia {
+            info!("Nvidia GPU found!");
+        } else {
+            info!("No Nvidia GPU found!");
+            return None;
+        }
+
+        // NVML initialization
         let nvml = match Nvml::init() {
             Ok(nvml) => nvml,
             Err(e) => {
-                warn!("Failed to initialize NVML. There could be a problem with loading the NVML libraries. Error: {}", e);
+                error!("Failed to initialize NVML. Error: {}", e);
                 return None;
             }
         };
@@ -83,12 +108,12 @@ impl NvidiaNVML {
         let gpus_count = match nvml.device_count() {
             Ok(count) => count,
             Err(e) => {
-                warn!("Failed to search Nvidia GPUs. Error: {}", e);
+                error!("Failed to search Nvidia GPUs using NVML. Error: {}", e);
                 return None;
             }
         };
 
-        info!("Nvidia GPUs found! Count: {}", gpus_count);
+        info!("Found {} Nvidia GPUs!", gpus_count);
 
         let mut gpus = Vec::with_capacity(gpus_count as usize);
         for i in 0..gpus_count {

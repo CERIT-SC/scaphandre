@@ -36,6 +36,7 @@ tokio = { version = "1.26.0", features = ["full"], optional = true}
 sysinfo = { version = "0.28.3"}
 isahc = { version = "1.7.2", optional = true }
 nvml-wrapper = { version = "0.11.0", optional = true }
+pci-info = { version = "0.3.4", optional = true }
 
 [target.'cfg(target_os="linux")'.dependencies]
 procfs = { version = "0.15.0" }
@@ -56,4 +57,4 @@ containers = ["docker-sync", "k8s-sync"]
 warpten = ["warp10"]
 prometheuspush = ["isahc"]
 qemu = []
-nvidia = ["nvml-wrapper"]
+nvidia = ["nvml-wrapper", "pci-info"]

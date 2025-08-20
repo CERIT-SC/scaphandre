@@ -455,6 +455,9 @@ impl Topology {
     #[cfg(feature = "nvidia")]
     pub fn add_gpus(&mut self) {
         self.gpu_nvml = NvidiaNVML::new();
+        if self.gpu_nvml.is_none() {
+            info!("Continue without measuring Nvidia GPUs!");
+        }
     }
 
     /// Adds a Socket instance to self.sockets if and only if the

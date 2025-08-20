@@ -193,13 +193,17 @@ impl MetricGenerator {
                         info!("Couldn't connect to docker socket. Error: {}", err);
                     }
                 }
-                if let Ok(kubernetes) = get_kubernetes_client() {
-                    kubernetes_client = Some(kubernetes);
-                    container_runtime = true;
-                    info!("Successfully connected to kubernetes API.");
-                } else {
-                    info!("Couldn't connect to kubernetes API.");
+                match get_kubernetes_client() {
+                    Ok(kubernetes) => {
+                        kubernetes_client = Some(kubernetes);
+                        container_runtime = true;
+                        info!("Successfully connected to kubernetes API.");
+                    },
+                    Err(e) => {
+                        info!("Couldn't connect to kubernetes API.");
+                    }
                 }
+
                 if !container_runtime {
                     warn!("--containers was used but scaphandre couldn't connect to any container runtime.");
                 }
@@ -837,7 +841,6 @@ impl MetricGenerator {
 
         let gpu_nvml_opt = &self.topology.gpu_nvml;
         if gpu_nvml_opt.is_none() {
-            info!("topology.gpu_nvml is null. No GPU metrics will be generated.");
             return;
         }
 
