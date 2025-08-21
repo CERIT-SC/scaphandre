@@ -190,7 +190,7 @@ impl MetricGenerator {
                         info!("Successfully connected to docker socket");
                     }
                     Err(err) => {
-                        info!("Couldn't connect to docker socket. Error: {}", err);
+                        warn!("Couldn't connect to docker socket. Error: {}", err);
                     }
                 }
                 match get_kubernetes_client() {
@@ -200,12 +200,12 @@ impl MetricGenerator {
                         info!("Successfully connected to kubernetes API.");
                     },
                     Err(e) => {
-                        info!("Couldn't connect to kubernetes API.");
+                        warn!("Couldn't connect to kubernetes API.");
                     }
                 }
 
                 if !container_runtime {
-                    warn!("--containers was used but scaphandre couldn't connect to any container runtime.");
+                    error!("--containers was used but scaphandre couldn't connect to any container runtime.");
                 }
             }
             MetricGenerator {
@@ -1030,7 +1030,7 @@ impl MetricGenerator {
                         None => continue,
                         Some(last_gpu_power_value) => {
                             let extra_pid_gpu_power = (pid_last_util.sm_util as f64 / 100 as f64) * last_gpu_power_value as f64;
-                            info!("PID {} utilized {}% of GPU power with {} uW", pid.to_string(), pid_last_util.sm_util, extra_pid_gpu_power);
+                            info!("PID {} utilized {}% of {} power with {} uW", pid.to_string(), pid_last_util.sm_util, gpu.to_string(), extra_pid_gpu_power);
                             gpu_extra_power += extra_pid_gpu_power;
                             attributes.insert("gpu".to_string(), "true".to_string());
                             attributes.insert("gpu_index".to_string(), gpu.index.to_string());

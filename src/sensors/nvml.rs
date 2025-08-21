@@ -7,10 +7,11 @@ use std::error::Error;
 use crate::sensors::{Record, RecordStorage};
 use crate::sensors::current_system_time_since_epoch;
 use crate::sensors::units::Unit;
+use std::fmt;
 
 #[derive(Debug)]
 pub struct NvidiaNVMLGpu {
-    pub index: u32,
+    pub index: usize,
     pub vendor: String,
     pub model: String,
     pub arch: String,
@@ -27,7 +28,7 @@ impl NvidiaNVMLGpu {
         let arch = device.architecture()?.to_string();
 
         Ok(NvidiaNVMLGpu {
-            index,
+            index: index as usize,
             vendor: "nvidia".to_string(),
             model,
             arch,
@@ -62,6 +63,12 @@ impl NvidiaNVMLGpu {
 
     pub fn push_proc_utils(&mut self, proc_utils: Vec<ProcessUtilizationSample>) {
         self.proc_utils.push(proc_utils);
+    }
+}
+
+impl fmt::Display for NvidiaNVMLGpu {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "GPU (index: {}, name: {})", self.index, self.model)
     }
 }
 
@@ -113,7 +120,7 @@ impl NvidiaNVML {
             }
         };
 
-        info!("Found {} Nvidia GPUs!", gpus_count);
+        info!("NVML initialized. Found {} Nvidia GPUs!", gpus_count);
 
         let mut gpus = Vec::with_capacity(gpus_count as usize);
         for i in 0..gpus_count {
@@ -129,6 +136,15 @@ impl NvidiaNVML {
             nvml_obj: nvml,
             gpus: gpus,
         })
+    }
+
+    pub fn get_gpu_str(&self, index: usize) -> String {
+        for gpu in &self.gpus {
+            if gpu.index == index {
+                return gpu.to_string();
+            }
+        }
+        return format!("GPU (index: {}, error: not found)", index);
     }
 
     pub fn get_gpus_count(&self) -> usize {
@@ -165,21 +181,24 @@ impl NvidiaNVML {
         for i in 0..self.get_gpus_count() {
             match self.get_gpu_consumption(i) {
                 Ok(record) => self.gpus[i].record_storage.add_record(&record),
-                Err(e) => warn!("Failed to refresh record for GPU with index {}. Error: {}", i, e),
+                Err(e) => warn!("Failed to refresh record for {}. Error: {}", self.get_gpu_str(i), e),
             }
 
-            if let Err(e) = self.refresh_process_utilization(i) {
-                if matches!(e.downcast_ref::<NvmlError>(), Some(NvmlError::NotFound)) {
-                    debug!("No process found on GPU with index {}.", i);
-                } else {
-                    warn!("Failed to refresh process utilization for GPU with index {}. Error: {}", i, e);
+            match self.refresh_process_utilization(i) {
+                Ok(_) => {
+                    info!(
+                        "Refreshing records for GPU. Count of records: {}",
+                        self.gpus[i].record_storage.records.len()
+                    );
+                },
+                Err(e) => {
+                    if matches!(e.downcast_ref::<NvmlError>(), Some(NvmlError::NotFound)) {
+                        info!("No process found on {}.", self.get_gpu_str(i));
+                    } else {
+                        warn!("Failed to refresh process utilization for {}. Error: {}", self.get_gpu_str(i), e);
+                    }
                 }
             }
-
-            info!(
-                "Refreshing records for GPU. Count of records: {}",
-                self.gpus[i].record_storage.records.len()
-            );
         }
     }
 }
