@@ -27,6 +27,32 @@ impl NvidiaNVMLGpu {
         let model = device.name()?.to_string();
         let arch = device.architecture()?.to_string();
 
+        // Check MIG (Multi-Instance GPU) support. Reading power usage is not available for MIG GPUs.
+        // MIG enabled       > problem
+        // MIG not enabled   > ok
+        // MIG not supported > ok
+        // MIG unknown error > hope that reading works
+        let mig_obstacle = match device.mig_mode() {
+            Ok(mig_mode) => {
+                if mig_mode.current > 0 {
+                    error!("MIG mode is enabled for GPU {}, name: {}. Power consumption reading doesn't work for cards in MIG mode.", index, model);
+                    true
+                } else {
+                    false
+                }
+            },
+            Err(e) => match e {
+                NvmlError::NotSupported => false,
+                _ => {
+                    error!("Failed to determine MIG mode for GPU {}, name: {}. Error: {}. Let's assume that power consumption reading works.", index, model, e);
+                    false
+                }
+            }
+        };
+        if mig_obstacle {
+            return Err("Power consumption reading doesn't work for cards in MIG mode.".into());
+        }
+
         Ok(NvidiaNVMLGpu {
             index: index as usize,
             vendor: "nvidia".to_string(),
