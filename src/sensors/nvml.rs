@@ -22,6 +22,7 @@ pub struct NvidiaNVMLGpu {
 }
 
 impl NvidiaNVMLGpu {
+    /// Returns new NvidiaNVMLGpu object if the GPU specified by the index is supported by the NVML, and doesn't have enabled MIG mode.
     pub fn new(nvml: &Nvml, index: u32) -> Result<NvidiaNVMLGpu, Box<dyn Error>> {
         let device = nvml.device_by_index(index)?;
         let model = device.name()?.to_string();
@@ -77,6 +78,7 @@ impl NvidiaNVMLGpu {
         result
     }
 
+    /// Returns last GPU usage record for the process specified by the PID.
     pub fn get_pid_last_util(&self, pid: u32) -> Option<&ProcessUtilizationSample> {
         let last_proc_utils = self.proc_utils.last()?;
         for proc_util in last_proc_utils {
@@ -87,6 +89,7 @@ impl NvidiaNVMLGpu {
         None
     }
 
+    /// Adds new processes utilization records.
     pub fn push_proc_utils(&mut self, proc_utils: Vec<ProcessUtilizationSample>) {
         self.proc_utils.push(proc_utils);
     }
@@ -105,8 +108,10 @@ pub struct NvidiaNVML {
 }
 
 impl NvidiaNVML {
+    /// Returns new NvidiaNVML object if at least one Nvidia PCIe device is found and NVML lib initialization is successfull.
+    /// Tries to initialize GPU handlers for all supported GPUs. If a problem occurs, returns None.
     pub fn new() -> Option<NvidiaNVML> {
-        // Detect GPU before NVML initialization
+        // Detect Nvidia PCIe device before NVML initialization
         let info = PciInfo::enumerate_pci().unwrap();
         let mut nvidia = false;
 
@@ -121,7 +126,6 @@ impl NvidiaNVML {
                 Err(error) => {}
             }
         }
-
         if nvidia {
             info!("Nvidia GPU found!");
         } else {
@@ -138,6 +142,7 @@ impl NvidiaNVML {
             }
         };
 
+        // Detect Nvidia GPUs using NVML
         let gpus_count = match nvml.device_count() {
             Ok(count) => count,
             Err(e) => {
@@ -148,6 +153,7 @@ impl NvidiaNVML {
 
         info!("NVML initialized. Found {} Nvidia GPUs!", gpus_count);
 
+        // Try to init GPU handler for all GPUs found using NVML
         let mut gpus = Vec::with_capacity(gpus_count as usize);
         for i in 0..gpus_count {
             match NvidiaNVMLGpu::new(&nvml, i) {
@@ -164,6 +170,7 @@ impl NvidiaNVML {
         })
     }
 
+    /// Returns string with GPU index and name.
     pub fn get_gpu_str(&self, index: usize) -> String {
         for gpu in &self.gpus {
             if gpu.index == index {
@@ -173,10 +180,12 @@ impl NvidiaNVML {
         return format!("GPU (index: {}, error: not found)", index);
     }
 
+    /// Returns count of the successfully initialized and managed GPUs.
     pub fn get_gpus_count(&self) -> usize {
         self.gpus.len()
     }
 
+    /// Returns NVML Device with specified index.
     fn get_device(&self, index: usize) -> Result<Device, Box<dyn Error>> {
         match self.nvml_obj.device_by_index(index as u32) {
             Err(e) => Err(Box::new(e)),
@@ -184,6 +193,7 @@ impl NvidiaNVML {
         }
     }
 
+    /// Returns Record with total power consumption of the GPU specified with index.
     pub fn get_gpu_consumption(&self, index: usize) -> Result<Record, Box<dyn Error>> {
         let device = self.get_device(index)?;
         let power_usage_milliwatts = device.power_usage()?;
@@ -196,6 +206,7 @@ impl NvidiaNVML {
         ))
     }
 
+    /// Check process utilization for the GPU specified with index, and save it the proc_utils structure.
     pub fn refresh_process_utilization(&mut self, index: usize) -> Result<(), Box<dyn Error>> {
         let device = self.get_device(index)?;
         let proc_utils = device.process_utilization_stats(None)?;
@@ -203,6 +214,7 @@ impl NvidiaNVML {
         Ok(())
     }
 
+    /// Check GPU power consumption and process utilization of all GPUs, and save the values.
     pub fn refresh_records(&mut self) {
         for i in 0..self.get_gpus_count() {
             match self.get_gpu_consumption(i) {

@@ -37,13 +37,6 @@ pub struct RecordStorage {
     pub records:  Vec<Record>,
     pub max_value: u128,
     pub max_kbytes_storage: u32,
-
-    // Hard-coded /sys/class/powercap/intel-rapl/intel-rapl\:0/max_energy_range_uj
-    // AMD EPYC 7543
-    // 65532610987 (amd?)
-    // Intel(R) Core(TM) i5-7400
-    // 262143328850 (intel?)
-    // TODO
 }
 
 impl Clone for RecordStorage {
@@ -65,8 +58,9 @@ impl RecordStorage {
         }
     }
 
-    /// Returns tuple of value and timestamp deltas between the current value and the provious one.
+    /// Returns tuple of record and timestamp deltas between the current record and the provious one.
     pub fn get_last_delta(&self) -> Option<(u128, f64)> {
+        // Define lambda for parsing value
         let parse_value = |value: &str| -> Option<u128> {
             value.trim().parse::<u128>().map_err(|e| {
                 warn!(
@@ -111,7 +105,10 @@ impl RecordStorage {
         Some((value_diff, time_diff))
     }
 
+    /// Returns tuple of record and timestamp deltas between the current record and the previous one.
+    /// If no record exists yet, returns None. If only one record exists, returns the record.
     pub fn get_last_delta_or_absolute(&self) -> Option<(u128, f64)> {
+        // Define lambda for parsing value
         let parse_value = |value: &str| -> Option<u128> {
             value.trim().parse::<u128>().map_err(|e| {
                 warn!(
@@ -122,19 +119,25 @@ impl RecordStorage {
             }).ok()
         };
 
+        // If delta exists, return delta
         let delta = self.get_last_delta();
         if delta.is_some() {
             return delta;
         }
+
+        // If last record is empty, return None
         let last_record = self.get_last_record();
         if last_record.is_none() {
             return None;
         }
+
+        // Return the last record
         let result_value = parse_value(&last_record.unwrap().value)?;
         let result_timestamp = last_record.unwrap().timestamp.as_secs_f64();
         Some((result_value, result_timestamp))
     }
 
+    /// Returns the last record. It no record exists yet, returns None.
     pub fn get_last_record(&self) -> Option<&Record> {
         if self.records.is_empty() {
             return None
@@ -142,10 +145,13 @@ impl RecordStorage {
         Some(&self.records.last().unwrap())
     }
 
+    /// Set the maximum possible value for the records. This is useful for the overflow detection.
+    /// Validity of the records are not verified against the max_value.
     pub fn set_maximum_value(&mut self, max_value: u128) {
         self.max_value = max_value;
     }
 
+    /// Add new record to the RecordStorage.
     pub fn add_record(&mut self, record: &Record) {
         self.records.push(record.clone());
         self.clean_old_records();
@@ -256,13 +262,8 @@ pub struct Topology {
     pub stat_buffer: Vec<CPUStat>,
     /// Measurements of energy usage, stored as Record instances
     pub record_storage: RecordStorage,
-    /// Maximum value of the counters for energy consumed by the entire Psys (if available)
+    /// TODO Maximum value of the counters for energy consumed by the entire Psys (if available)
     /// or `(packages + dram) * n_sockets`.
-    /// TODO
-    /// This variable could be set once at the end of the Topology setup.
-    //pub counter_uj_max: String,
-    /// Maximum size in memory for the recor_buffer
-    //pub buffer_max_kbytes: u16,
     /// Sorted list of all domains names
     pub domains_names: Option<Vec<String>>,
     /// Sensor-specific data needed in the topology
@@ -283,8 +284,8 @@ impl RecordManipulator for Topology {
         &self.sockets[0].counter_uj_path
     }
 
-    /// Return PSYS value, if available.
-    /// Otherwise, return sum of (PKG + DRAM domains) for each socket.
+    /// Returns PSYS value, if available (TODO not yet!).
+    /// Otherwise, returns total sum of (PKG + DRAM domains) for all sockets.
     fn get_entity_consumption(&self) -> Result<Record, Box<dyn Error>> {
         // TODO check for PSYS availability
 
@@ -312,19 +313,6 @@ impl RecordManipulator for Topology {
                 },
                 None => {
                     warn!("Couldn't summarize host consumption due to missing data for socket {}.", socket.id);
-                    /*
-                    // If this function is called for the first time,
-                    // the delta will be the last record.
-                    info!("Summarizing host consumption for the first time. Using first record for the socket {}.", socket.id);
-                    match socket.get_record_storage_passive().get_last_record() {
-                        Some(last_record) => {
-                            value_increment += last_record.value;
-                        },
-                        None => {
-                            warn!("Couldn't summarize host consumption due to missing data for socket {}.", socket.id);
-                        },
-                    }
-                    */
                 }
             }
             for domain in socket.get_domains_passive() {
@@ -339,19 +327,6 @@ impl RecordManipulator for Topology {
                     },
                     None => {
                         warn!("Couldn't summarize host consumption due to missingh data for socket DRAM domain. Socket: {}.", socket.id);
-                        /*
-                        // If this function is called for the first time,
-                        // the delta will be the last record.
-                        info!("Summarizing host consumption for the first time. Using first record for the socket DRAM domain. Socket {}.", socket.id);
-                        match domain.get_record_storage_passive().get_last_record() {
-                            Some(last_record) => {
-                                value_increment += last_record.value;
-                            },
-                            None => {
-                                warn!("Couldn't summarize host consumption due to missingh data for socket DRAM domain. Socket: {}.", socket.id);
-                            },
-                        }
-                        */
                     }
                 }
             }
@@ -440,6 +415,9 @@ impl Topology {
         Some(cores)
     }
 
+    /// Set maximum value of the counters for energy consumed by the entire Psys (if available (TODO not yet!))
+    /// or `(packages + dram) * n_sockets`.
+    /// This function should be called only once at the end of the Topology setup.
     pub fn set_maximum_value(&mut self) {
         let mut max_value = 0u128;
         for socket in &self.sockets {
@@ -551,19 +529,6 @@ impl Topology {
         }
         self.build_domains_names();
     }
-
-    /*
-    /// Set maximum value of the counters for energy consumed by the entire Psys (if available)
-    /// or `(packages + dram) * n_sockets`.
-    /// This founction could be run once at the end of the Topology setup.
-    pub fn set_max_counter_uj(&mut self) {
-        let mut max_counter_uj = 0;
-
-        if let Some(psys) = self.get_psys() {
-
-        }
-    }
-    */
 
     /// Generates CPUCore instances for the host and adds them
     /// to appropriate CPUSocket instance from self.sockets
