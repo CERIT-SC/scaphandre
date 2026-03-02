@@ -20,6 +20,7 @@ scaphandre:
   - "--containers"
 #  - "--qemu"
 
+  containers: true
 #  rustBacktrace: '1'
   measureNvidia: false
 
