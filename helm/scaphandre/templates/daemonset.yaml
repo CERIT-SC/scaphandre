@@ -41,10 +41,10 @@ spec:
         volumeMounts:
         - mountPath: /proc
           name: proc
-          readOnly: false
+          readOnly: true
         - mountPath: /sys/class/powercap
           name: powercap
-          readOnly: false
+          readOnly: true
         {{- if .Values.scaphandre.measureNvidia }}
         securityContext:
           privileged: true
