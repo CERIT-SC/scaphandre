@@ -13,6 +13,15 @@ resources:
     memory: 4Gi
     cpu: 4
 
+gpuSupport:
+  # Enable Nvidia GPUs measurement
+  enabled: false
+  # Are all nodes equipped with Nvidia GPUs?
+  # -----
+  # `all` - all nodes contain at least one GPU
+  # `hybrid` - some of the nodes contain at least one GPU
+  nodes: hybrid
+
 scaphandre:
   args:
   - "-v"
@@ -22,7 +31,6 @@ scaphandre:
 
   containers: true
 #  rustBacktrace: '1'
-  measureNvidia: false
 
 # Run as root user to get proper permissions
 userID: 0
