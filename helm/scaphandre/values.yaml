@@ -32,6 +32,14 @@ scaphandre:
   containers: true
 #  rustBacktrace: '1'
 
+
+# Enable access to the host PID namespace so Scaphandre can see host processes
+hostPID: true
+
+# Disable AppArmor confinement, as the pod does not start or function correctly under the default profile.
+podAnnotations:
+  container.apparmor.security.beta.kubernetes.io/scaphandre: unconfined
+
 # Run as root user to get proper permissions
 userID: 0
 groupID: 0
