@@ -12,7 +12,12 @@ spec:
       name: {{ include "scaphandre.name" $ctx }}
       labels:
         {{- include "labels.common" $ctx | nindent 8 }}
+      {{- if .Values.podAnnotations }}
+      annotations:
+        {{- toYaml .Values.podAnnotations | nindent 8 }}
+      {{- end }}
     spec:
+      hostPID: {{ .Values.hostPID | default true }}
       {{- if $gpuPresent }}
       runtimeClassName: nvidia
       {{- end }}
